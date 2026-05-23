@@ -1,25 +1,27 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Search, Loader2 } from 'lucide-react';
-import { ImageEntry, ensureThumbnail, CropRecord, convertFileSrc } from '../api';
+import { ImageEntry, ensureThumbnail, CropRecord, SkipRecord, convertFileSrc } from '../api';
+
+export type StatusFilter = 'all' | 'cropped' | 'uncropped' | 'skipped';
 
 interface Props {
   images: ImageEntry[];
   selectedIndex: number;
   cropRecords: Record<string, CropRecord[]>;
+  skipRecords: Record<string, SkipRecord>;
   onSelect: (index: number) => void;
+  statusFilter: StatusFilter;
+  onStatusFilterChange: (filter: StatusFilter) => void;
 }
 
 const PAGE_SIZE = 40;
 const CONCURRENCY = 2;
 
-type CropFilter = 'all' | 'cropped' | 'uncropped';
-
-export function ImageGrid({ images, selectedIndex, cropRecords, onSelect }: Props) {
+export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onSelect, statusFilter, onStatusFilterChange }: Props) {
   const [thumbPaths, setThumbPaths] = useState<Record<string, string>>({});
   const [failedThumbs, setFailedThumbs] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('all');
-  const [cropFilter, setCropFilter] = useState<CropFilter>('all');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   const indexMap = useMemo(() => {
@@ -50,17 +52,22 @@ export function ImageGrid({ images, selectedIndex, cropRecords, onSelect }: Prop
     if (category !== 'all') {
       list = list.filter((i) => i.relative_path.startsWith(category + '/'));
     }
-    if (cropFilter === 'cropped') {
-      list = list.filter((i) => (cropRecords[i.source_path]?.length || 0) > 0);
-    } else if (cropFilter === 'uncropped') {
-      list = list.filter((i) => (cropRecords[i.source_path]?.length || 0) === 0);
-    }
     return list;
-  }, [images, search, category, cropFilter, cropRecords]);
+  }, [images, search, category]);
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [search, category, cropFilter, images]);
+  }, [search, category, images]);
+
+  const croppedRel = useMemo(
+    () => new Set(Object.values(cropRecords).flat().map((r) => r.relative_path)),
+    [cropRecords]
+  );
+
+  const skippedRel = useMemo(
+    () => new Set(Object.values(skipRecords).map((r) => r.relative_path)),
+    [skipRecords]
+  );
 
   const visibleImages = useMemo(
     () => filtered.slice(0, visibleCount),
@@ -135,13 +142,14 @@ export function ImageGrid({ images, selectedIndex, cropRecords, onSelect }: Prop
           </select>
           <select
             className="select"
-            value={cropFilter}
-            onChange={(e) => setCropFilter(e.target.value as CropFilter)}
+            value={statusFilter}
+            onChange={(e) => onStatusFilterChange(e.target.value as StatusFilter)}
             style={{ flex: 1 }}
           >
             <option value="all">全部</option>
             <option value="cropped">已裁剪</option>
             <option value="uncropped">未裁剪</option>
+            <option value="skipped">跳过</option>
           </select>
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6, textAlign: 'right' }}>
@@ -161,7 +169,8 @@ export function ImageGrid({ images, selectedIndex, cropRecords, onSelect }: Prop
         <div className="thumb-grid">
           {visibleImages.map((img) => {
             const globalIdx = indexMap.get(img.source_path) ?? -1;
-            const hasCrops = (cropRecords[img.source_path]?.length || 0) > 0;
+            const hasCrops = croppedRel.has(img.relative_path);
+            const isSkipped = skippedRel.has(img.relative_path);
             const isSelected = globalIdx === selectedIndex;
             const thumbPath = thumbPaths[img.source_path];
             const failed = failedThumbs.has(img.source_path);
@@ -196,6 +205,7 @@ export function ImageGrid({ images, selectedIndex, cropRecords, onSelect }: Prop
                   </div>
                 )}
                 {hasCrops && <div className="cropped-badge">已裁</div>}
+                {isSkipped && !hasCrops && <div className="skipped-badge">跳过</div>}
                 <div className="filename">{img.filename}</div>
               </div>
             );

@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { X, ImageOff, Calendar, Ruler, FileText, Folder, ChevronLeft, ChevronRight, Scissors } from 'lucide-react';
-import { CropRecord, readCroppedImageAsDataUrl } from '../api';
+import { X, ImageOff, Calendar, Ruler, FileText, Folder, ChevronLeft, ChevronRight, Scissors, Trash2 } from 'lucide-react';
+import { CropRecord, readCroppedImageAsDataUrl, deleteCropRecord } from '../api';
 
 interface Props {
   records: CropRecord[];
   onClose: () => void;
   onRecrop?: (record: CropRecord) => void;
+  onDeleteCropRecord?: (deleted: CropRecord) => void;
 }
 
-export function CroppedGallery({ records, onClose, onRecrop }: Props) {
+export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord }: Props) {
   const [thumbs, setThumbs] = useState<Record<string, { url: string; failed: boolean }>>({});
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
@@ -66,6 +67,14 @@ export function CroppedGallery({ records, onClose, onRecrop }: Props) {
   const total = sorted.length;
   const currentRecord = previewIndex !== null ? sorted[previewIndex] : null;
   const currentThumb = currentRecord ? thumbs[currentRecord.output_path] : null;
+
+  const currentOutputPath = currentRecord?.output_path;
+
+  useEffect(() => {
+    if (currentRecord && currentOutputPath && !thumbs[currentOutputPath] && !loadingRef.current.has(currentOutputPath)) {
+      loadThumb(currentRecord);
+    }
+  }, [currentRecord, currentOutputPath, thumbs, loadThumb]);
 
   const goPrev = useCallback(() => {
     setPreviewIndex((i) => {
@@ -368,6 +377,32 @@ export function CroppedGallery({ records, onClose, onRecrop }: Props) {
             }}
             onClick={(e) => e.stopPropagation()}
           >
+            {onDeleteCropRecord && currentRecord && (
+              <button
+                className="btn btn-danger"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (!currentRecord) return;
+                  const ok = confirm('确定删除这张已裁剪图片吗？原图不会删除。');
+                  if (!ok) return;
+                  try {
+                    const deleted = await deleteCropRecord(currentRecord.output_path);
+                    const nextLength = sorted.length - 1;
+                    if (nextLength === 0) {
+                      setPreviewIndex(null);
+                    } else if (previewIndex !== null && previewIndex >= nextLength) {
+                      setPreviewIndex(nextLength - 1);
+                    }
+                    onDeleteCropRecord(deleted);
+                  } catch (err: any) {
+                    alert('删除失败: ' + (err?.message || String(err)));
+                  }
+                }}
+              >
+                <Trash2 size={14} style={{ marginRight: 4 }} />
+                删除已裁图片
+              </button>
+            )}
             {onRecrop && currentRecord && (
               <button
                 className="btn btn-accent"

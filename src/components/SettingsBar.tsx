@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FolderOpen, ScanLine, Eye, EyeOff, FileJson, Play, CheckSquare, Square, Images } from 'lucide-react';
+import { FolderOpen, ScanLine, Eye, EyeOff, FileJson, CheckSquare, Square, Images } from 'lucide-react';
 import {
   Settings as SettingsType,
   pickOutputDir,
@@ -42,8 +42,6 @@ export function SettingsBar({
   loading,
   onImportComplete,
 }: Props) {
-  const [importedJsonPath, setImportedJsonPath] = useState<string | null>(null);
-  const [importedJsonName, setImportedJsonName] = useState<string | null>(null);
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchResult, setBatchResult] = useState<BatchResult | null>(null);
 
@@ -63,22 +61,15 @@ export function SettingsBar({
     }
   };
 
-  const handleImportRecords = async () => {
+  const handleBatchCrop = async () => {
     const jsonPath = await pickJsonFile();
     if (!jsonPath) return;
-    const name = jsonPath.split(/[\\/]/).pop() || jsonPath;
-    setImportedJsonPath(jsonPath);
-    setImportedJsonName(name);
-    setBatchResult(null);
-  };
-
-  const handleRunBatch = async () => {
-    if (!importedJsonPath) return;
     setBatchRunning(true);
+    setBatchResult(null);
     try {
-      const result: BatchResult = await runBatchFromJson(importedJsonPath, settings.output_dir);
+      const result: BatchResult = await runBatchFromJson(jsonPath, settings.output_dir);
       setBatchResult(result);
-      const msg = `完成：成功 ${result.success} 条，失败 ${result.failed} 条`;
+      const msg = `批量裁剪完成：成功 ${result.success} 条，失败 ${result.failed} 条`;
       if (result.failed > 0 && result.failures.length > 0) {
         const details = result.failures
           .slice(0, 5)
@@ -86,11 +77,11 @@ export function SettingsBar({
           .join('\n');
         alert(msg + '\n\n失败详情（前5条）:\n' + details);
       } else {
-        alert(msg);
+        alert(msg + '\n已自动清理对应跳过记录并刷新列表。');
       }
       onImportComplete();
     } catch (e: any) {
-      alert('自动裁剪失败: ' + (e?.message || String(e)));
+      alert('批量裁剪失败: ' + (e?.message || String(e)));
     } finally {
       setBatchRunning(false);
     }
@@ -138,25 +129,14 @@ export function SettingsBar({
           NSFW
         </button>
 
-        <button className="btn btn-sm" onClick={handleImportRecords} disabled={loading || batchRunning} title="导入裁剪记录">
-          <FileJson size={13} />
-          导入
-        </button>
-
-        {importedJsonName && (
-          <span style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-            {importedJsonName}
-          </span>
-        )}
-
         <button
           className="btn btn-sm"
-          onClick={handleRunBatch}
-          disabled={!importedJsonPath || loading || batchRunning}
-          title="开始自动裁剪"
+          onClick={handleBatchCrop}
+          disabled={loading || batchRunning}
+          title="选择裁剪记录 JSON 并执行批量裁剪"
         >
-          <Play size={13} />
-          {batchRunning ? '裁剪中...' : '自动裁剪'}
+          <FileJson size={13} />
+          {batchRunning ? '裁剪中...' : '批量裁剪'}
         </button>
 
         {batchResult && (
@@ -188,7 +168,7 @@ export function SettingsBar({
           }}
         >
           {showCropped ? <CheckSquare size={13} /> : <Square size={13} />}
-          {showCropped ? '显示已裁剪' : '隐藏已裁剪'}
+          {showCropped ? '隐藏已裁剪' : '显示已裁剪'}
         </button>
 
         <button className="btn btn-accent" onClick={onScan} disabled={loading || batchRunning || !settings.source_dir}>

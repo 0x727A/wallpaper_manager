@@ -44,6 +44,14 @@ pub struct CropRecord {
     pub created_at: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SkipRecord {
+    pub source_path: String,
+    pub relative_path: String,
+    pub filename: String,
+    pub skipped_at: String,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct SaveCropRequest {
     pub source_path: String,
@@ -329,6 +337,45 @@ fn write_crops(source_dir: &str, records: &[CropRecord]) -> Result<(), String> {
             format!("写入 crops.json 失败: {}", e)
         }
     })
+}
+
+fn skipped_json_path(source_dir: &str) -> PathBuf {
+    Path::new(source_dir).join("skipped.json")
+}
+
+fn read_skipped(source_dir: &str) -> Result<Vec<SkipRecord>, String> {
+    let path = skipped_json_path(source_dir);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(&path).map_err(|e| format!("读取 skipped.json 失败: {}", e))?;
+    serde_json::from_str(&text).map_err(|e| format!("解析 skipped.json 失败: {}", e))
+}
+
+fn write_skipped(source_dir: &str, records: &[SkipRecord]) -> Result<(), String> {
+    let path = skipped_json_path(source_dir);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+    let text = serde_json::to_string_pretty(records).map_err(|e| format!("序列化失败: {}", e))?;
+    fs::write(&path, text).map_err(|e| format!("写入 skipped.json 失败: {}", e))
+}
+
+fn remove_skip_record(source_dir: &str, source_path: &str) -> Result<(), String> {
+    let mut records = read_skipped(source_dir)?;
+    let before = records.len();
+    let canon = fs::canonicalize(source_path).ok();
+    let canon_str = canon.as_ref().map(|p| path_string(p));
+    let canon_raw = canon.as_ref().map(|p| p.to_string_lossy().to_string());
+    records.retain(|r| {
+        r.source_path != source_path
+            && canon_str.as_ref().map_or(true, |cs| r.source_path != *cs)
+            && canon_raw.as_ref().map_or(true, |cr| r.source_path != *cr)
+    });
+    if records.len() != before {
+        write_skipped(source_dir, &records)?;
+    }
+    Ok(())
 }
 
 fn generate_output_filename(
@@ -810,7 +857,67 @@ fn save_crop(
     records.push(record.clone());
     write_crops(&source_dir, &records)?;
 
+    // 保存裁剪后自动移除跳过记录（失败只打日志，不影响保存结果）
+    if let Err(e) = remove_skip_record(&source_dir, &request.source_path) {
+        eprintln!("保存裁剪成功，但清除跳过记录失败: {}", e);
+    }
+
     Ok(record)
+}
+
+#[tauri::command]
+fn delete_crop_record(
+    state: tauri::State<AppState>,
+    output_path: String,
+) -> Result<CropRecord, String> {
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|e| format!("锁错误: {}", e))?;
+    let source_dir = settings.source_dir.clone();
+    let output_dir = settings.output_dir.clone();
+    drop(settings);
+
+    // 1. 读 crops.json，先确认记录存在
+    let mut records = read_crops(&source_dir)?;
+
+    let target_canon = fs::canonicalize(&output_path).ok();
+    let found_idx = records.iter().position(|r| {
+        if r.output_path == output_path {
+            return true;
+        }
+        if let (Some(target), Ok(record_canon)) = (&target_canon, fs::canonicalize(&r.output_path)) {
+            return record_canon == *target;
+        }
+        false
+    });
+
+    let removed = match found_idx {
+        Some(idx) => records.remove(idx),
+        None => return Err("未找到对应裁剪记录".into()),
+    };
+
+    // 2. 校验输出目录（仅用于日志/参考，不限制删除）
+    // 旧输出目录中的历史记录也允许删除；安全边界是必须先匹配 crops.json 记录。
+    let _out_dir = if output_dir.is_empty() {
+        suggested_output_dir(Path::new(&source_dir)).ok()
+    } else {
+        fs::canonicalize(&output_dir).ok()
+    };
+
+    // 3. 删除文件（文件不存在也继续）
+    if let Some(ref p) = target_canon {
+        if p.exists() {
+            if let Err(e) = fs::remove_file(p) {
+                return Err(format!("删除裁剪图失败: {}", e));
+            }
+        }
+    }
+
+    // 4. 写回 crops.json
+    write_crops(&source_dir, &records)?;
+
+    Ok(removed)
 }
 
 #[tauri::command]
@@ -887,10 +994,10 @@ fn run_batch_from_json(
     let mut records: Vec<CropRecord> =
         serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
 
-    // 去重：同一张原图只保留最后一条记录
+    // 去重：同一张原图只保留最后一条记录（按 relative_path 更稳）
     let mut deduped: Vec<CropRecord> = Vec::new();
     for record in records {
-        deduped.retain(|r| r.source_path != record.source_path);
+        deduped.retain(|r| r.relative_path != record.relative_path);
         deduped.push(record);
     }
     records = deduped;
@@ -898,6 +1005,7 @@ fn run_batch_from_json(
     let mut existing_records = read_crops(&source_dir)?;
     let mut success = 0usize;
     let mut failures = Vec::new();
+    let mut successful_relative_paths = Vec::new();
 
     for record in records {
         // 优先用 current_source_dir + relative_path 找原图，fallback 到 record.source_path
@@ -932,6 +1040,7 @@ fn run_batch_from_json(
         ) {
             Ok(new_record) => {
                 success += 1;
+                successful_relative_paths.push(new_record.relative_path.clone());
                 existing_records.push(new_record);
             }
             Err(e) => failures.push(BatchFailure {
@@ -942,6 +1051,17 @@ fn run_batch_from_json(
     }
 
     write_crops(&source_dir, &existing_records)?;
+
+    if !successful_relative_paths.is_empty() {
+        let mut skipped = read_skipped(&source_dir)?;
+        let skipped_before = skipped.len();
+        skipped.retain(|r| !successful_relative_paths.contains(&r.relative_path));
+        if skipped.len() != skipped_before {
+            if let Err(e) = write_skipped(&source_dir, &skipped) {
+                eprintln!("批量裁剪成功，但清除跳过记录失败: {}", e);
+            }
+        }
+    }
 
     Ok(BatchResult {
         success,
@@ -971,8 +1091,19 @@ fn delete_original_image(state: tauri::State<AppState>, source_path: String) -> 
     });
     let crops_changed = records.len() != before;
 
+    // 准备清理 skipped.json，等 move 成功后再写回
+    let mut skipped = read_skipped(&source_dir)?;
+    let skipped_before = skipped.len();
+    skipped.retain(|r| {
+        r.source_path != source_path && r.source_path != canon_str && r.source_path != canon_raw
+    });
+    let skipped_changed = skipped.len() != skipped_before;
+
     move_to_deleted(&canon, &root)?;
 
+    if skipped_changed {
+        write_skipped(&source_dir, &skipped)?;
+    }
     if crops_changed {
         write_crops(&source_dir, &records)?;
     }
@@ -1152,6 +1283,52 @@ fn save_recrop(
     }
 
     Ok(record)
+}
+
+#[tauri::command]
+fn read_skip_records(state: tauri::State<AppState>) -> Result<Vec<SkipRecord>, String> {
+    let settings = state.settings.lock().map_err(|e| format!("锁错误: {}", e))?;
+    read_skipped(&settings.source_dir)
+}
+
+#[tauri::command]
+fn skip_image(
+    state: tauri::State<AppState>,
+    source_path: String,
+) -> Result<SkipRecord, String> {
+    let settings = state.settings.lock().map_err(|e| format!("锁错误: {}", e))?;
+    let source_dir = settings.source_dir.clone();
+    drop(settings);
+
+    let canon = validate_source_path(&source_dir, &source_path)?;
+    let root = canonical_source_dir(&source_dir)?;
+    let rel = relative_path_for_record(canon.strip_prefix(&root).map_err(|_| "无法计算相对路径")?);
+    let filename = canon.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+
+    let mut records = read_skipped(&source_dir)?;
+    let canon_str = path_string(&canon);
+    records.retain(|r| r.source_path != source_path && r.source_path != canon_str);
+    let record = SkipRecord {
+        source_path: canon_str,
+        relative_path: rel,
+        filename,
+        skipped_at: Local::now().to_rfc3339(),
+    };
+    records.push(record.clone());
+    write_skipped(&source_dir, &records)?;
+    Ok(record)
+}
+
+#[tauri::command]
+fn unskip_image(
+    state: tauri::State<AppState>,
+    source_path: String,
+) -> Result<(), String> {
+    let settings = state.settings.lock().map_err(|e| format!("锁错误: {}", e))?;
+    let source_dir = settings.source_dir.clone();
+    drop(settings);
+
+    remove_skip_record(&source_dir, &source_path)
 }
 
 // ── Tauri setup ──
@@ -1380,6 +1557,10 @@ pub fn run() {
             resolve_original_for_record,
             preview_crop,
             save_recrop,
+            read_skip_records,
+            skip_image,
+            unskip_image,
+            delete_crop_record,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

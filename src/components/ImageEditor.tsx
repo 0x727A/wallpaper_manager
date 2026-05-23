@@ -32,9 +32,10 @@ interface Props {
   recropTarget?: CropRecord | null;
   onPreviewRecrop?: (request: SaveCropRequest) => void;
   onCancelRecrop?: () => void;
+  onSkipImage?: () => void;
 }
 
-export function ImageEditor({ image, existingCrops, onSave, onDelete, onPrev, onNext, settings, ratioMode, onRatioModeChange, recropTarget, onPreviewRecrop, onCancelRecrop }: Props) {
+export function ImageEditor({ image, existingCrops, onSave, onDelete, onSkipImage, onPrev, onNext, settings, ratioMode, onRatioModeChange, recropTarget, onPreviewRecrop, onCancelRecrop }: Props) {
   const [crop, setCrop] = useState<PercentCrop>();
   const [completedCrop, setCompletedCrop] = useState<PercentCrop>();
   const [cropName, setCropName] = useState('');
@@ -43,6 +44,15 @@ export function ImageEditor({ image, existingCrops, onSave, onDelete, onPrev, on
   const editorViewportRef = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState(1);
   const [fitZoom, setFitZoom] = useState(1);
+
+  type GuideMode = 'none' | 'thirds' | 'diagonal' | 'cross' | 'thirds_diagonal' | 'thirds_cross';
+  const [guideMode, setGuideMode] = useState<GuideMode>(() => {
+    return (localStorage.getItem('cropGuideMode') as GuideMode) || 'thirds';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('cropGuideMode', guideMode);
+  }, [guideMode]);
 
   const isRecropActive = recropTarget && recropTarget.relative_path === image.relative_path;
 
@@ -263,7 +273,7 @@ export function ImageEditor({ image, existingCrops, onSave, onDelete, onPrev, on
         >
           {preview ? (
             <div
-              className="zoom-wrapper"
+              className={`zoom-wrapper crop-guide crop-guide-${guideMode}`}
               style={{
                 width: `${preview.preview_width * zoom}px`,
                 height: `${preview.preview_height * zoom}px`,
@@ -334,6 +344,22 @@ export function ImageEditor({ image, existingCrops, onSave, onDelete, onPrev, on
           </div>
 
           <div className="panel-group">
+            <div className="panel-group-title">辅助线</div>
+            <select
+              className="select"
+              value={guideMode}
+              onChange={(e) => setGuideMode(e.target.value as GuideMode)}
+            >
+              <option value="none">无</option>
+              <option value="thirds">三分线</option>
+              <option value="diagonal">对角线</option>
+              <option value="cross">十字线</option>
+              <option value="thirds_diagonal">三分线 + 对角线</option>
+              <option value="thirds_cross">三分线 + 十字线</option>
+            </select>
+          </div>
+
+          <div className="panel-group">
             <div className="panel-group-title">裁剪坐标</div>
             <div style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'monospace', lineHeight: 1.6 }}>
               {completedCrop && preview ? (
@@ -379,6 +405,17 @@ export function ImageEditor({ image, existingCrops, onSave, onDelete, onPrev, on
               >
                 <Save size={14} />
                 {saving ? '保存中...' : '保存裁剪'}
+              </button>
+            )}
+
+            {!isRecropActive && (
+              <button
+                className="btn"
+                onClick={onSkipImage}
+                disabled={saving}
+                style={{ width: '100%', marginBottom: 8 }}
+              >
+                跳过
               </button>
             )}
 

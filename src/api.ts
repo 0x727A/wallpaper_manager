@@ -49,6 +49,13 @@ export interface BatchResult {
   failures: BatchFailure[];
 }
 
+export interface SkipRecord {
+  source_path: string;
+  relative_path: string;
+  filename: string;
+  skipped_at: string;
+}
+
 export interface CropPreview {
   data_url: string;
   width: number;
@@ -102,6 +109,9 @@ export const runBatchFromJson = (jsonPath: string, outputDir: string): Promise<B
 export const deleteOriginalImage = (sourcePath: string): Promise<void> =>
   invoke('delete_original_image', { sourcePath });
 
+export const deleteCropRecord = (outputPath: string): Promise<CropRecord> =>
+  invoke('delete_crop_record', { outputPath });
+
 export const readCroppedImageAsDataUrl = (outputPath: string): Promise<string> =>
   invoke('read_cropped_image_as_data_url', { outputPath });
 
@@ -118,5 +128,14 @@ export interface SaveRecropRequest {
 
 export const saveRecrop = (request: SaveRecropRequest): Promise<CropRecord> =>
   invoke('save_recrop', { request });
+
+export const readSkipRecords = (): Promise<SkipRecord[]> =>
+  invoke('read_skip_records');
+
+export const skipImage = (sourcePath: string): Promise<SkipRecord> =>
+  invoke('skip_image', { sourcePath });
+
+export const unskipImage = (sourcePath: string): Promise<void> =>
+  invoke('unskip_image', { sourcePath });
 
 export { convertFileSrc };
