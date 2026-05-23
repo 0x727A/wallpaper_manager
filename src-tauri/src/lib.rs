@@ -87,6 +87,20 @@ fn canonical_source_dir(source_dir: &str) -> Result<PathBuf, String> {
     fs::canonicalize(source_dir).map_err(|e| format!("无法访问图库目录: {}", e))
 }
 
+fn clean_path_str(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{}", rest);
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        return rest.to_string();
+    }
+    path.to_string()
+}
+
+fn path_string(path: &Path) -> String {
+    clean_path_str(&path.to_string_lossy())
+}
+
 fn suggested_output_dir(source_dir: &Path) -> Result<PathBuf, String> {
     let name = source_dir
         .file_name()
@@ -140,8 +154,7 @@ fn validate_output_dir(path: &str, source_dir: &str) -> Result<PathBuf, String> 
     }
 
     if current.exists() && !source_dir.is_empty() {
-        let existing_canon =
-            fs::canonicalize(current).map_err(|e| format!("路径无效: {}", e))?;
+        let existing_canon = fs::canonicalize(current).map_err(|e| format!("路径无效: {}", e))?;
         let source_root = canonical_source_dir(source_dir)?;
         let mut intended = existing_canon;
         for part in missing_parts.iter().rev() {
@@ -199,7 +212,10 @@ fn relative_path_for_record(path: &Path) -> String {
 }
 
 fn sanitize_filename(name: &str) -> String {
-    name.replace(|c: char| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'), "_")
+    name.replace(
+        |c: char| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'),
+        "_",
+    )
 }
 
 fn detect_nsfw(path: &Path, root: &Path) -> bool {
@@ -230,18 +246,17 @@ fn load_settings(handle: &AppHandle) -> Result<Settings, String> {
     let mut changed = false;
 
     if path.exists() {
-        let text =
-            fs::read_to_string(&path).map_err(|e| format!("读取设置失败: {}", e))?;
+        let text = fs::read_to_string(&path).map_err(|e| format!("读取设置失败: {}", e))?;
         let partial: PartialSettings =
             serde_json::from_str(&text).map_err(|e| format!("解析设置失败: {}", e))?;
         if let Some(ref sd) = partial.source_dir {
             if !sd.is_empty() {
-                source_dir = sd.clone();
+                source_dir = clean_path_str(sd);
             }
         }
         if let Some(ref od) = partial.output_dir {
             if !od.is_empty() {
-                output_dir = od.clone();
+                output_dir = clean_path_str(od);
             }
         }
     }
@@ -257,8 +272,8 @@ fn load_settings(handle: &AppHandle) -> Result<Settings, String> {
         if is_crops_dir(Path::new(&source_dir)) {
             if let Some(candidate) = strip_crops_suffix(Path::new(&source_dir)) {
                 if candidate.is_dir() {
-                    source_dir = candidate.to_string_lossy().to_string();
-                    output_dir = suggested_output_dir(&candidate)?.to_string_lossy().to_string();
+                    source_dir = path_string(&candidate);
+                    output_dir = path_string(&suggested_output_dir(&candidate)?);
                     changed = true;
                 }
             }
@@ -267,7 +282,7 @@ fn load_settings(handle: &AppHandle) -> Result<Settings, String> {
 
     // 如果 source_dir 非空但 output_dir 为空，自动计算
     if !source_dir.is_empty() && output_dir.is_empty() {
-        output_dir = suggested_output_dir(Path::new(&source_dir))?.to_string_lossy().to_string();
+        output_dir = path_string(&suggested_output_dir(Path::new(&source_dir))?);
         changed = true;
     }
 
@@ -338,7 +353,10 @@ fn move_to_deleted(src: &Path, source_dir: &Path) -> Result<(), String> {
     let rel = src
         .strip_prefix(source_dir)
         .map_err(|_| "无法计算相对路径")?;
-    let filename = src.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+    let filename = src
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
     let dst_dir = source_dir
         .join("_deleted")
         .join(rel.parent().unwrap_or(Path::new("")));
@@ -406,7 +424,7 @@ fn create_crop_file(
         source_path
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or("crop")
+            .unwrap_or("crop"),
     );
     let ext = source_path
         .extension()
@@ -415,8 +433,7 @@ fn create_crop_file(
         .to_lowercase();
     let out_ext = if ext == "jpeg" { "jpg" } else { ext.as_str() };
 
-    let out_dir = Path::new(output_dir)
-        .join(rel.parent().unwrap_or(Path::new("")));
+    let out_dir = Path::new(output_dir).join(rel.parent().unwrap_or(Path::new("")));
     fs::create_dir_all(&out_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
 
     let out_filename = generate_output_filename(
@@ -432,11 +449,11 @@ fn create_crop_file(
         .save(&out_path)
         .map_err(|e| format!("保存裁剪图失败: {}", e))?;
 
-    let out_path_str = out_path.to_string_lossy().to_string();
+    let out_path_str = path_string(&out_path);
     let rel_str = relative_path_for_record(rel);
 
     Ok(CropRecord {
-        source_path: source_path.to_string_lossy().to_string(),
+        source_path: path_string(source_path),
         relative_path: rel_str,
         crop_name: crop_name.to_string(),
         x,
@@ -455,7 +472,10 @@ fn create_crop_file(
 // ── Commands ──
 
 #[tauri::command]
-fn scan_images(state: tauri::State<AppState>, include_nsfw: bool) -> Result<Vec<ImageEntry>, String> {
+fn scan_images(
+    state: tauri::State<AppState>,
+    include_nsfw: bool,
+) -> Result<Vec<ImageEntry>, String> {
     let settings = state
         .settings
         .lock()
@@ -489,9 +509,8 @@ fn scan_images(state: tauri::State<AppState>, include_nsfw: bool) -> Result<Vec<
         if !include_nsfw && is_nsfw {
             continue;
         }
-        let relative_path = relative_path_for_record(
-            path.strip_prefix(&root).map_err(|_| "相对路径计算失败")?
-        );
+        let relative_path =
+            relative_path_for_record(path.strip_prefix(&root).map_err(|_| "相对路径计算失败")?);
         let filename = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -499,7 +518,7 @@ fn scan_images(state: tauri::State<AppState>, include_nsfw: bool) -> Result<Vec<
             .to_string();
 
         entries.push(ImageEntry {
-            source_path: path.to_string_lossy().to_string(),
+            source_path: path_string(path),
             relative_path,
             filename,
             is_nsfw,
@@ -512,7 +531,10 @@ fn scan_images(state: tauri::State<AppState>, include_nsfw: bool) -> Result<Vec<
 
 #[tauri::command]
 fn get_settings(state: tauri::State<AppState>) -> Result<Settings, String> {
-    let settings = state.settings.lock().map_err(|e| format!("锁错误: {}", e))?;
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|e| format!("锁错误: {}", e))?;
     Ok(settings.clone())
 }
 
@@ -530,7 +552,7 @@ fn set_output_dir(
     drop(settings);
 
     let canon = validate_output_dir(&path, &source_dir)?;
-    let canon_str = canon.to_string_lossy().to_string();
+    let canon_str = path_string(&canon);
     let mut settings = state
         .settings
         .lock()
@@ -554,7 +576,7 @@ fn set_source_dir(
         return Err("图库目录必须是文件夹".into());
     }
     let canon = fs::canonicalize(&path).map_err(|e| format!("路径无效: {}", e))?;
-    let canon_str = canon.to_string_lossy().to_string();
+    let canon_str = path_string(&canon);
 
     validate_wallhaven_root(&canon)?;
 
@@ -570,7 +592,7 @@ fn set_source_dir(
     let should_auto_output = settings.output_dir.is_empty()
         || validate_output_dir(&settings.output_dir, &canon_str).is_err();
     if should_auto_output {
-        settings.output_dir = suggested_output_dir(&canon)?.to_string_lossy().to_string();
+        settings.output_dir = path_string(&suggested_output_dir(&canon)?);
     }
     settings.source_dir = canon_str;
     save_settings_to_disk(&handle, &settings)?;
@@ -583,13 +605,16 @@ async fn pick_output_dir(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     let start_dir = {
-        let settings = state.settings.lock().map_err(|e| format!("锁错误: {}", e))?;
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
         let current = settings.output_dir.clone();
         if !current.is_empty() && Path::new(&current).exists() {
             current
         } else {
             dirs::desktop_dir()
-                .map(|d| d.to_string_lossy().to_string())
+                .map(|d| path_string(&d))
                 .unwrap_or_default()
         }
     };
@@ -603,7 +628,7 @@ async fn pick_output_dir(
     })
     .await
     .map_err(|e| e.to_string())?;
-    Ok(folder.and_then(|p| p.into_path().ok().map(|p| p.to_string_lossy().to_string())))
+    Ok(folder.and_then(|p| p.into_path().ok().map(|p| path_string(&p))))
 }
 
 #[tauri::command]
@@ -612,13 +637,16 @@ async fn pick_source_dir(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     let start_dir = {
-        let settings = state.settings.lock().map_err(|e| format!("锁错误: {}", e))?;
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
         let current = settings.source_dir.clone();
         if !current.is_empty() && Path::new(&current).exists() {
             current
         } else {
             dirs::desktop_dir()
-                .map(|d| d.to_string_lossy().to_string())
+                .map(|d| path_string(&d))
                 .unwrap_or_default()
         }
     };
@@ -632,7 +660,7 @@ async fn pick_source_dir(
     })
     .await
     .map_err(|e| e.to_string())?;
-    Ok(folder.and_then(|p| p.into_path().ok().map(|p| p.to_string_lossy().to_string())))
+    Ok(folder.and_then(|p| p.into_path().ok().map(|p| path_string(&p))))
 }
 
 #[tauri::command]
@@ -646,7 +674,7 @@ async fn pick_json_file(handle: AppHandle) -> Result<Option<String>, String> {
     })
     .await
     .map_err(|e| e.to_string())?;
-    Ok(file.and_then(|p| p.into_path().ok().map(|p| p.to_string_lossy().to_string())))
+    Ok(file.and_then(|p| p.into_path().ok().map(|p| path_string(&p))))
 }
 
 #[tauri::command]
@@ -665,9 +693,7 @@ async fn ensure_thumbnail(
 
     let canon = validate_source_path(&source_dir, &source_path)?;
     let root = canonical_source_dir(&source_dir)?;
-    let rel = canon
-        .strip_prefix(&root)
-        .map_err(|_| "无法计算相对路径")?;
+    let rel = canon.strip_prefix(&root).map_err(|_| "无法计算相对路径")?;
 
     let cache_dir = handle
         .path()
@@ -685,7 +711,7 @@ async fn ensure_thumbnail(
 
     // Fast path: cache exists, return immediately
     if thumb_path.exists() {
-        return Ok(thumb_path.to_string_lossy().to_string());
+        return Ok(path_string(&thumb_path));
     }
 
     // Generate thumbnail in blocking thread
@@ -696,13 +722,15 @@ async fn ensure_thumbnail(
         fs::create_dir_all(&thumb_dir_clone).map_err(|e| format!("创建缩略图目录失败: {}", e))?;
         let img = image::open(&canon_clone).map_err(|e| format!("打开图片失败: {}", e))?;
         let thumb = img.thumbnail(240, 240);
-        thumb.save(&thumb_path_clone).map_err(|e| format!("保存缩略图失败: {}", e))?;
+        thumb
+            .save(&thumb_path_clone)
+            .map_err(|e| format!("保存缩略图失败: {}", e))?;
         Ok::<(), String>(())
     })
     .await
     .map_err(|e| format!("生成缩略图任务失败: {}", e))??;
 
-    Ok(thumb_path.to_string_lossy().to_string())
+    Ok(path_string(&thumb_path))
 }
 
 #[tauri::command]
@@ -732,7 +760,12 @@ fn read_preview_image(
     let mut cursor = std::io::Cursor::new(&mut buffer);
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 90);
     encoder
-        .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+        .write_image(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
         .map_err(|e| format!("编码预览图失败: {}", e))?;
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(&buffer);
@@ -782,7 +815,10 @@ fn save_crop(
 
 #[tauri::command]
 fn read_crop_records(state: tauri::State<AppState>) -> Result<Vec<CropRecord>, String> {
-    let settings = state.settings.lock().map_err(|e| format!("锁错误: {}", e))?;
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|e| format!("锁错误: {}", e))?;
     read_crops(&settings.source_dir)
 }
 
@@ -791,17 +827,18 @@ fn read_cropped_image_as_data_url(
     state: tauri::State<AppState>,
     output_path: String,
 ) -> Result<String, String> {
-    let settings = state.settings.lock().map_err(|e| format!("锁错误: {}", e))?;
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|e| format!("锁错误: {}", e))?;
     let output_root = if settings.output_dir.is_empty() {
         return Err("输出目录未设置".into());
     } else {
-        fs::canonicalize(&settings.output_dir)
-            .map_err(|e| format!("输出目录无效: {}", e))?
+        fs::canonicalize(&settings.output_dir).map_err(|e| format!("输出目录无效: {}", e))?
     };
     drop(settings);
 
-    let path = fs::canonicalize(&output_path)
-        .map_err(|e| format!("裁剪图不存在: {}", e))?;
+    let path = fs::canonicalize(&output_path).map_err(|e| format!("裁剪图不存在: {}", e))?;
 
     if !path.starts_with(&output_root) {
         return Err("裁剪图不在输出目录内".into());
@@ -845,9 +882,7 @@ fn run_batch_from_json(
         return Err("请选择有效的 JSON 文件".into());
     }
 
-    let output_dir = validate_output_dir(&output_dir, &source_dir)?
-        .to_string_lossy()
-        .to_string();
+    let output_dir = path_string(&validate_output_dir(&output_dir, &source_dir)?);
     let text = fs::read_to_string(&json_path).map_err(|e| format!("读取 JSON 失败: {}", e))?;
     let mut records: Vec<CropRecord> =
         serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
@@ -868,7 +903,7 @@ fn run_batch_from_json(
         // 优先用 current_source_dir + relative_path 找原图，fallback 到 record.source_path
         let candidate = Path::new(&source_dir).join(&record.relative_path);
         let source_path_str = if candidate.exists() {
-            candidate.to_string_lossy().to_string()
+            path_string(&candidate)
         } else {
             record.source_path.clone()
         };
@@ -916,10 +951,7 @@ fn run_batch_from_json(
 }
 
 #[tauri::command]
-fn delete_original_image(
-    state: tauri::State<AppState>,
-    source_path: String,
-) -> Result<(), String> {
+fn delete_original_image(state: tauri::State<AppState>, source_path: String) -> Result<(), String> {
     let settings = state
         .settings
         .lock()
@@ -932,8 +964,11 @@ fn delete_original_image(
 
     let mut records = read_crops(&source_dir)?;
     let before = records.len();
-    let canon_str = canon.to_string_lossy().to_string();
-    records.retain(|r| r.source_path != source_path && r.source_path != canon_str);
+    let canon_str = path_string(&canon);
+    let canon_raw = canon.to_string_lossy().to_string();
+    records.retain(|r| {
+        r.source_path != source_path && r.source_path != canon_str && r.source_path != canon_raw
+    });
     let crops_changed = records.len() != before;
 
     move_to_deleted(&canon, &root)?;
@@ -963,7 +998,10 @@ fn resolve_original_for_record(
     state: tauri::State<AppState>,
     record: CropRecord,
 ) -> Result<ImageEntry, String> {
-    let settings = state.settings.lock().map_err(|e| format!("锁错误: {}", e))?;
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|e| format!("锁错误: {}", e))?;
     let source_dir = settings.source_dir.clone();
     drop(settings);
 
@@ -974,10 +1012,14 @@ fn resolve_original_for_record(
     if candidate.exists() {
         let canon = validate_source_path(&source_dir, &candidate.to_string_lossy())?;
         let rel = relative_path_for_record(canon.strip_prefix(&root).unwrap_or(Path::new("")));
-        let filename = canon.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        let filename = canon
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
         let is_nsfw = detect_nsfw(&canon, &root);
         return Ok(ImageEntry {
-            source_path: canon.to_string_lossy().to_string(),
+            source_path: path_string(&canon),
             relative_path: rel,
             filename,
             is_nsfw,
@@ -989,10 +1031,14 @@ fn resolve_original_for_record(
     if fallback.exists() {
         let canon = validate_source_path(&source_dir, &record.source_path)?;
         let rel = relative_path_for_record(canon.strip_prefix(&root).unwrap_or(Path::new("")));
-        let filename = canon.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        let filename = canon
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
         let is_nsfw = detect_nsfw(&canon, &root);
         return Ok(ImageEntry {
-            source_path: canon.to_string_lossy().to_string(),
+            source_path: path_string(&canon),
             relative_path: rel,
             filename,
             is_nsfw,
@@ -1007,7 +1053,10 @@ fn preview_crop(
     state: tauri::State<AppState>,
     request: SaveCropRequest,
 ) -> Result<CropPreview, String> {
-    let settings = state.settings.lock().map_err(|e| format!("锁错误: {}", e))?;
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|e| format!("锁错误: {}", e))?;
     let source_dir = settings.source_dir.clone();
     drop(settings);
 
@@ -1031,7 +1080,12 @@ fn preview_crop(
     let mut cursor = std::io::Cursor::new(&mut buffer);
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 90);
     encoder
-        .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+        .write_image(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
         .map_err(|e| format!("编码预览图失败: {}", e))?;
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(&buffer);
@@ -1049,7 +1103,10 @@ fn save_recrop(
     state: tauri::State<AppState>,
     request: SaveRecropRequest,
 ) -> Result<CropRecord, String> {
-    let settings = state.settings.lock().map_err(|e| format!("锁错误: {}", e))?;
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|e| format!("锁错误: {}", e))?;
     let source_dir = settings.source_dir.clone();
     let output_dir = settings.output_dir.clone();
     drop(settings);
@@ -1124,6 +1181,22 @@ fn validate_wallhaven_root(dir: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn test_clean_path_str_strips_windows_device_prefix() {
+        assert_eq!(
+            clean_path_str(r"\\?\C:\Wallhaven\img.jpg"),
+            r"C:\Wallhaven\img.jpg"
+        );
+    }
+
+    #[test]
+    fn test_clean_path_str_strips_windows_unc_prefix() {
+        assert_eq!(
+            clean_path_str(r"\\?\UNC\server\share\img.jpg"),
+            r"\\server\share\img.jpg"
+        );
+    }
 
     #[test]
     fn test_sfw_subdir_accepted() {
@@ -1218,23 +1291,22 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let settings = load_settings(&app.handle()).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, e)
-            })?;
+            let settings = load_settings(&app.handle())
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             app.manage(AppState {
                 settings: Mutex::new(settings),
             });
 
-            let cache_dir = app.path().app_cache_dir().map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, e)
-            })?;
+            let cache_dir = app
+                .path()
+                .app_cache_dir()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             let thumb_dir = cache_dir.join("thumbs");
-            fs::create_dir_all(&thumb_dir).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, e)
-            })?;
-            app.asset_protocol_scope().allow_directory(&thumb_dir, true).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, e)
-            })?;
+            fs::create_dir_all(&thumb_dir)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            app.asset_protocol_scope()
+                .allow_directory(&thumb_dir, true)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
             #[cfg(target_os = "macos")]
             {
@@ -1247,7 +1319,11 @@ pub fn run() {
                             "应用",
                             true,
                             &[
-                                &PredefinedMenuItem::about(app, Some("关于 Wallhaven 图片裁剪记录器"), None)?,
+                                &PredefinedMenuItem::about(
+                                    app,
+                                    Some("关于 Wallhaven 图片裁剪记录器"),
+                                    None,
+                                )?,
                                 &PredefinedMenuItem::separator(app)?,
                                 &PredefinedMenuItem::quit(app, Some("退出"))?,
                             ],
@@ -1266,9 +1342,7 @@ pub fn run() {
                             app,
                             "显示",
                             true,
-                            &[
-                                &PredefinedMenuItem::fullscreen(app, Some("进入全屏"))?,
-                            ],
+                            &[&PredefinedMenuItem::fullscreen(app, Some("进入全屏"))?],
                         )?,
                         &Submenu::with_items(
                             app,
