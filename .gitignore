@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Frontend build
+dist/
+
+# Rust build
+target/
+
+# Tauri generated
+src-tauri/gen/
+src-tauri/.tauri/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+
+# Secrets
+.env
+
+# Package artifacts
+*.msi
+*.exe
+*.dmg
+*.app
+
+# Runtime data
+crops.json
+_deleted/
+_cropped/
+WallhavenCrops/
