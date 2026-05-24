@@ -78,6 +78,8 @@ export default function App() {
   const [cropRecords, setCropRecords] = useState<Record<string, CropRecord[]>>({});
   const [skipRecords, setSkipRecords] = useState<Record<string, SkipRecord>>({});
   const [loading, setLoading] = useState(false);
+  const flatCropRecords = useMemo(() => Object.values(cropRecords).flat(), [cropRecords]);
+
   const [recropTarget, setRecropTarget] = useState<CropRecord | null>(null);
   const [recropCompare, setRecropCompare] = useState<{
     oldRecord: CropRecord;
@@ -501,7 +503,7 @@ export default function App() {
       </div>
       {croppedGalleryOpen && (
         <CroppedGallery
-          records={useMemo(() => Object.values(cropRecords).flat(), [cropRecords])}
+          records={flatCropRecords}
           onClose={() => setCroppedGalleryOpen(false)}
           onRecrop={startRecrop}
           onDeleteCropRecord={handleDeleteCropRecord}

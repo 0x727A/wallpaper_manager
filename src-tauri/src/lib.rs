@@ -779,21 +779,9 @@ fn source_dir_hash(source_dir: &str) -> String {
 }
 
 fn is_thumb_stale(source_path: &Path, thumb_path: &Path) -> bool {
-    let source_meta = match fs::metadata(source_path) {
-        Ok(m) => m,
-        Err(_) => return true,
-    };
-    let thumb_meta = match fs::metadata(thumb_path) {
-        Ok(m) => m,
-        Err(_) => return true,
-    };
-    let source_mtime = source_meta.modified().ok();
-    let thumb_mtime = thumb_meta.modified().ok();
-    match (source_mtime, thumb_mtime) {
-        (Some(sm), Some(tm)) if sm > tm => return true,
-        _ => {}
-    }
-    source_meta.len() != thumb_meta.len()
+    let source_mtime = fs::metadata(source_path).and_then(|m| m.modified()).ok();
+    let thumb_mtime = fs::metadata(thumb_path).and_then(|m| m.modified()).ok();
+    matches!((source_mtime, thumb_mtime), (Some(sm), Some(tm)) if sm > tm)
 }
 
 #[tauri::command]
