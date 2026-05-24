@@ -163,8 +163,24 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
         clearTimeout(flushTimeoutRef.current);
         flushTimeoutRef.current = null;
       }
-      pendingThumbsRef.current = {};
-      pendingFailedRef.current = new Set();
+      // 立即 flush 残留 pending，避免 in-flight 结果丢失导致重复请求
+      const pendingPaths = pendingThumbsRef.current;
+      const pendingFailed = pendingFailedRef.current;
+      if (Object.keys(pendingPaths).length > 0 || pendingFailed.size > 0) {
+        setThumbPaths((prev) => {
+          const next = { ...prev, ...pendingPaths };
+          pendingThumbsRef.current = {};
+          return next;
+        });
+        setFailedThumbs((prev) => {
+          const next = new Set(prev);
+          for (const k of pendingFailed) {
+            next.add(k);
+          }
+          pendingFailedRef.current = new Set();
+          return next;
+        });
+      }
     };
   }, [visibleImages]); // eslint-disable-line react-hooks/exhaustive-deps
 
