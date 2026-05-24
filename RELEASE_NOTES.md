@@ -1,3 +1,36 @@
+# v1.2.1
+
+## 性能优化
+
+- **保存/重裁不卡 UI**：`save_crop` / `save_recrop` 的裁图、JSON 读写、旧图删除全部移入 `spawn_blocking`，Tokio worker 线程不再被大图编码阻塞
+- **预览加载不卡 UI**：`read_preview_image` / `preview_crop` 的解码、缩放、JPEG 编码、base64 全部移入 `spawn_blocking`
+- **批量裁剪后台化**：主循环丢进 `spawn_blocking`，不再阻塞前端；删除批量内的缩略图等待，让图库按可见项懒加载
+- **批量裁剪进度 + 取消**：后端 emit `batch-progress-{job_id}` 事件，前端实时显示 `done/total`；支持取消，Windows 慢盘下可随时中止
+- **已裁画廊批量验证**：新增 `ensure_cropped_thumbnails` 命令，每批最多 12 张一次 IPC，后端只读一次 `crops.json`，从 N 次降到 ~N/12 次 IPC
+- **canonical 索引预建**：批量验证时一次性预建 `HashSet<PathBuf>`，字符串 miss 后从 O(n) canonicalize 降到 O(1) 查找
+- **ImageGrid 缩略图 batch flush**：`pendingThumbsRef` + 50ms debounce，一批完成最多触发一次 React render
+- **App.tsx useMemo**：`Object.values(cropRecords).flat()` 提取到组件顶部缓存，避免每次 render 重建
+
+## Bug 修复
+
+- **CroppedGallery queue deadlock**：`.finally` 先判断 generation 再清理 ref；cleanup 递增 generation，彻底防止旧 promise 污染新队列
+- **后端编译错误**：`run_batch_from_json` / `save_recrop` 中 `MutexGuard` 限制在独立作用域，guard 在 `.await` 前自动释放
+- **错误吞掉**：前端 4 处 `.catch(() => ...)` 改为 `.catch((err) => { console.error(...) })`，后端异常可见
+- **缩略图缓存跨图库碰撞**：`ensure_thumbnail` 缓存路径加入 `source_dir` hash，不同图库不再共用同一缩略图
+- **缩略图缓存精确失效**：sidecar `.meta` 文件记录源文件 `size + mtime`，避免系统时钟调整导致的误失效；删除错误的"原图大小 vs 缩略图大小"比较
+- **ImageGrid cleanup 丢结果**：effect cleanup 不再清空 pending ref，而是立即 flush 到 state，避免快速搜索/加载更多时的重复请求
+- **App.tsx hooks 规则**：`useMemo` 从条件渲染 JSX 内提取到组件顶部
+- **已裁图库 canonical 重复**：`resolve_cropped_image_path` / `ensure_cropped_thumbnail` 去掉循环内重复 `fs::canonicalize(&path)`，字符串优先、canonical fallback 惰性做
+
+## 内部重构
+
+- `generate_crop_thumbnail_sync` 提取为纯 sync 函数，`ensure_cropped_thumbnails` 在 `spawn_blocking` 内直接调用
+- `HashSet` 替代 `Vec.contains` 清理 skipped 记录，批量裁剪时从 O(n²) 降到 O(n)
+- `BatchResult` 新增 `cancelled` / `total` / `done`，取消时前端显示"已取消 x/y"而非假"完成"
+- `SaveCropRequest` / `SaveRecropRequest` 补 `Clone`，方便 `spawn_blocking` 闭包 move
+
+---
+
 # v1.2.0
 
 ## 性能优化
