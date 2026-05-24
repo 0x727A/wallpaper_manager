@@ -136,6 +136,9 @@ export const resolveCroppedImagePath = (outputPath: string): Promise<string> =>
 export const ensureCroppedThumbnail = (outputPath: string): Promise<string> =>
   invoke('ensure_cropped_thumbnail', { outputPath });
 
+export const ensureCroppedThumbnails = (outputPaths: string[]): Promise<Record<string, string>> =>
+  invoke('ensure_cropped_thumbnails', { outputPaths });
+
 export const resolveOriginalForRecord = (record: CropRecord): Promise<ImageEntry> =>
   invoke('resolve_original_for_record', { record });
 

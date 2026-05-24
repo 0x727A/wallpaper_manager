@@ -1049,7 +1049,7 @@ fn resolve_cropped_image_path(
     Ok(path_string(&path))
 }
 
-async fn generate_crop_thumbnail(
+fn generate_crop_thumbnail_sync(
     handle: &AppHandle,
     output_path: &str,
 ) -> Result<String, String> {
@@ -1082,33 +1082,38 @@ async fn generate_crop_thumbnail(
         return Ok(path_string(&thumb_path));
     }
 
-    let path_clone = path.clone();
-    let thumb_dir_clone = thumb_dir.clone();
-    let thumb_path_clone = thumb_path.clone();
-    let hash_clone = hash.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        fs::create_dir_all(&thumb_dir_clone).map_err(|e| format!("创建缩略图目录失败: {}", e))?;
-        let img = image::open(&path_clone).map_err(|e| format!("打开图片失败: {}", e))?;
-        let thumb = img.thumbnail(360, 360);
-        let unique_suffix = format!("{:?}", std::thread::current().id());
-        let tmp_name = format!(".tmp.{}.{}.{}", hash_clone, unique_suffix, filename);
-        let tmp_path = thumb_dir_clone.join(&tmp_name);
-        thumb
-            .save(&tmp_path)
-            .map_err(|e| format!("保存缩略图失败: {}", e))?;
-        if let Err(e) = fs::rename(&tmp_path, &thumb_path_clone) {
-            if thumb_path_clone.exists() {
-                let _ = fs::remove_file(&tmp_path);
-                return Ok(());
-            }
-            return Err(format!("重命名缩略图失败: {}", e));
+    fs::create_dir_all(&thumb_dir).map_err(|e| format!("创建缩略图目录失败: {}", e))?;
+    let img = image::open(&path).map_err(|e| format!("打开图片失败: {}", e))?;
+    let thumb = img.thumbnail(360, 360);
+    let unique_suffix = format!("{:?}", std::thread::current().id());
+    let tmp_name = format!(".tmp.{}.{}.{}", hash, unique_suffix, filename);
+    let tmp_path = thumb_dir.join(&tmp_name);
+    thumb
+        .save(&tmp_path)
+        .map_err(|e| format!("保存缩略图失败: {}", e))?;
+    if let Err(e) = fs::rename(&tmp_path, &thumb_path) {
+        if thumb_path.exists() {
+            let _ = fs::remove_file(&tmp_path);
+            return Ok(path_string(&thumb_path));
         }
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| format!("生成缩略图任务失败: {}", e))??;
+        return Err(format!("重命名缩略图失败: {}", e));
+    }
 
     Ok(path_string(&thumb_path))
+}
+
+async fn generate_crop_thumbnail(
+    handle: &AppHandle,
+    output_path: &str,
+) -> Result<String, String> {
+    let handle = handle.clone();
+    let output_path = output_path.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        generate_crop_thumbnail_sync(&handle, &output_path)
+    })
+    .await
+    .map_err(|e| format!("生成缩略图任务失败: {}", e))
+    .and_then(|r| r)
 }
 
 #[tauri::command]
@@ -1145,6 +1150,61 @@ async fn ensure_cropped_thumbnail(
     }
 
     generate_crop_thumbnail(&handle, &output_path).await
+}
+
+#[tauri::command]
+async fn ensure_cropped_thumbnails(
+    handle: AppHandle,
+    state: tauri::State<'_, AppState>,
+    output_paths: Vec<String>,
+) -> Result<HashMap<String, String>, String> {
+    let source_dir = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        settings.source_dir.clone()
+    };
+
+    let handle_clone = handle.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let records = read_crops(&source_dir)?;
+        let record_map: HashMap<String, &CropRecord> =
+            records.iter().map(|r| (r.output_path.clone(), r)).collect();
+
+        let mut result = HashMap::new();
+        for output_path in &output_paths {
+            let found = if record_map.contains_key(output_path) {
+                true
+            } else if let Ok(path) = fs::canonicalize(output_path) {
+                records.iter().any(|r| {
+                    fs::canonicalize(&r.output_path).map_or(false, |rp| rp == path)
+                })
+            } else {
+                false
+            };
+
+            if !found {
+                continue;
+            }
+            if !is_image_file(Path::new(output_path)) {
+                continue;
+            }
+
+            match generate_crop_thumbnail_sync(&handle_clone, output_path) {
+                Ok(thumb_path) => {
+                    result.insert(output_path.clone(), thumb_path);
+                }
+                Err(e) => {
+                    eprintln!("批量缩略图生成失败: {} - {}", output_path, e);
+                }
+            }
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|e| format!("批量缩略图任务失败: {}", e))
+    .and_then(|r| r)
 }
 
 fn run_batch_from_json_blocking(
@@ -1897,6 +1957,7 @@ pub fn run() {
             delete_original_image,
             resolve_cropped_image_path,
             ensure_cropped_thumbnail,
+            ensure_cropped_thumbnails,
             resolve_original_for_record,
             preview_crop,
             save_recrop,

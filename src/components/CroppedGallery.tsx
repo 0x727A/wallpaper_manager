@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { X, ImageOff, Calendar, Ruler, FileText, Folder, ChevronLeft, ChevronRight, Scissors, Trash2 } from 'lucide-react';
-import { CropRecord, resolveCroppedImagePath, ensureCroppedThumbnail, deleteCropRecord, convertFileSrc } from '../api';
+import { CropRecord, resolveCroppedImagePath, ensureCroppedThumbnails, deleteCropRecord, convertFileSrc } from '../api';
 
 interface Props {
   records: CropRecord[];
@@ -48,32 +48,52 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
     }, 50);
   }, []);
 
+  const BATCH_SIZE = 12;
+
   const scheduleLoad = useCallback(() => {
     const gen = generationRef.current;
     while (runningRef.current < CONCURRENCY && queueRef.current.length > 0) {
-      const record = queueRef.current.shift()!;
-      const key = record.output_path;
-      queuedRef.current.delete(key);
-      if (loadedRef.current.has(key) || loadingRef.current.has(key)) {
-        continue;
+      const batch: CropRecord[] = [];
+      const keys: string[] = [];
+      while (batch.length < BATCH_SIZE && queueRef.current.length > 0) {
+        const record = queueRef.current.shift()!;
+        const key = record.output_path;
+        queuedRef.current.delete(key);
+        if (loadedRef.current.has(key) || loadingRef.current.has(key)) {
+          continue;
+        }
+        batch.push(record);
+        keys.push(key);
+        loadingRef.current.add(key);
       }
+      if (keys.length === 0) continue;
+
       runningRef.current++;
-      loadingRef.current.add(key);
-      ensureCroppedThumbnail(key)
-        .then((path) => {
+      ensureCroppedThumbnails(keys)
+        .then((map) => {
           if (generationRef.current !== gen) return;
-          loadedRef.current.add(key);
-          pendingThumbsRef.current[key] = { path, failed: false };
+          for (const key of keys) {
+            loadedRef.current.add(key);
+            if (map[key]) {
+              pendingThumbsRef.current[key] = { path: map[key], failed: false };
+            } else {
+              pendingThumbsRef.current[key] = { path: '', failed: true };
+            }
+          }
         })
         .catch((err) => {
-          console.error('ensureCroppedThumbnail failed', key, err);
+          console.error('ensureCroppedThumbnails failed', keys, err);
           if (generationRef.current !== gen) return;
-          loadedRef.current.add(key);
-          pendingThumbsRef.current[key] = { path: '', failed: true };
+          for (const key of keys) {
+            loadedRef.current.add(key);
+            pendingThumbsRef.current[key] = { path: '', failed: true };
+          }
         })
         .finally(() => {
           if (generationRef.current !== gen) return;
-          loadingRef.current.delete(key);
+          for (const key of keys) {
+            loadingRef.current.delete(key);
+          }
           runningRef.current = Math.max(0, runningRef.current - 1);
           flushThumbs();
           scheduleLoad();
