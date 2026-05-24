@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { Search, Loader2 } from 'lucide-react';
 import { ImageEntry, ensureThumbnail, CropRecord, SkipRecord, convertFileSrc } from '../api';
 
@@ -23,6 +23,34 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('all');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
+  const pendingThumbsRef = useRef<Record<string, string>>({});
+  const pendingFailedRef = useRef<Set<string>>(new Set());
+  const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushThumbs = useCallback(() => {
+    if (flushTimeoutRef.current !== null) return;
+    flushTimeoutRef.current = setTimeout(() => {
+      flushTimeoutRef.current = null;
+      const pendingPaths = pendingThumbsRef.current;
+      const pendingFailed = pendingFailedRef.current;
+      if (Object.keys(pendingPaths).length > 0 || pendingFailed.size > 0) {
+        setThumbPaths((prev) => {
+          const next = { ...prev, ...pendingPaths };
+          pendingThumbsRef.current = {};
+          return next;
+        });
+        setFailedThumbs((prev) => {
+          const next = new Set(prev);
+          for (const k of pendingFailed) {
+            next.add(k);
+          }
+          pendingFailedRef.current = new Set();
+          return next;
+        });
+      }
+    }, 50);
+  }, []);
 
   const indexMap = useMemo(() => {
     const map = new Map<string, number>();
@@ -109,13 +137,15 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
       ensureThumbnail(img.source_path)
         .then((path) => {
           if (!cancelled) {
-            setThumbPaths((prev) => ({ ...prev, [img.source_path]: path }));
+            pendingThumbsRef.current[img.source_path] = path;
+            flushThumbs();
           }
         })
         .catch((err) => {
           console.error('ensureThumbnail failed', img.source_path, err);
           if (!cancelled) {
-            setFailedThumbs((prev) => new Set([...prev, img.source_path]));
+            pendingFailedRef.current.add(img.source_path);
+            flushThumbs();
           }
         })
         .finally(() => {
@@ -129,6 +159,12 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
 
     return () => {
       cancelled = true;
+      if (flushTimeoutRef.current) {
+        clearTimeout(flushTimeoutRef.current);
+        flushTimeoutRef.current = null;
+      }
+      pendingThumbsRef.current = {};
+      pendingFailedRef.current = new Set();
     };
   }, [visibleImages]); // eslint-disable-line react-hooks/exhaustive-deps
 
