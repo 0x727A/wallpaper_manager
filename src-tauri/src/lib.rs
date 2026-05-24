@@ -62,7 +62,7 @@ pub struct SkipRecord {
     pub skipped_at: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct SaveCropRequest {
     pub source_path: String,
     pub crop_name: String,
@@ -873,6 +873,37 @@ fn read_preview_image(
     })
 }
 
+fn save_crop_blocking(
+    source_dir: &str,
+    output_dir: &str,
+    request: &SaveCropRequest,
+) -> Result<CropRecord, String> {
+    let canon = validate_source_path(source_dir, &request.source_path)?;
+    let mut record = create_crop_file(
+        &canon,
+        source_dir,
+        output_dir,
+        &request.crop_name,
+        request.x,
+        request.y,
+        request.width,
+        request.height,
+        &request.ratio_mode,
+        &request.output_mode,
+    )?;
+    record.rating = request.rating.min(3);
+
+    let mut records = read_crops(source_dir)?;
+    records.push(record.clone());
+    write_crops(source_dir, &records)?;
+
+    if let Err(e) = remove_skip_record(source_dir, &request.source_path) {
+        eprintln!("保存裁剪成功，但清除跳过记录失败: {}", e);
+    }
+
+    Ok(record)
+}
+
 #[tauri::command]
 async fn save_crop(
     handle: AppHandle,
@@ -887,31 +918,16 @@ async fn save_crop(
         (settings.source_dir.clone(), settings.output_dir.clone())
     };
 
-    let canon = validate_source_path(&source_dir, &request.source_path)?;
-    let mut record = create_crop_file(
-        &canon,
-        &source_dir,
-        &output_dir,
-        &request.crop_name,
-        request.x,
-        request.y,
-        request.width,
-        request.height,
-        &request.ratio_mode,
-        &request.output_mode,
-    )?;
-    record.rating = request.rating.min(3);
+    let source_dir_clone = source_dir.clone();
+    let output_dir_clone = output_dir.clone();
+    let request_clone = request;
+    let record = tauri::async_runtime::spawn_blocking(move || {
+        save_crop_blocking(&source_dir_clone, &output_dir_clone, &request_clone)
+    })
+    .await
+    .map_err(|e| format!("保存裁剪任务失败: {}", e))
+    .and_then(|r| r)?;
 
-    let mut records = read_crops(&source_dir)?;
-    records.push(record.clone());
-    write_crops(&source_dir, &records)?;
-
-    // 保存裁剪后自动移除跳过记录（失败只打日志，不影响保存结果）
-    if let Err(e) = remove_skip_record(&source_dir, &request.source_path) {
-        eprintln!("保存裁剪成功，但清除跳过记录失败: {}", e);
-    }
-
-    // 后台生成缩略图，不阻塞保存响应
     let thumb_handle = handle.clone();
     let thumb_path = record.output_path.clone();
     tauri::async_runtime::spawn(async move {
@@ -1006,8 +1022,9 @@ fn resolve_cropped_image_path(
         if r.output_path == output_path {
             return true;
         }
-        if let (Ok(p), Ok(rp)) = (fs::canonicalize(&path), fs::canonicalize(&r.output_path)) {
-            return p == rp;
+        // 字符串不匹配时才走 canonical 慢路径
+        if let Ok(rp) = fs::canonicalize(&r.output_path) {
+            return path == rp;
         }
         false
     });
@@ -1108,8 +1125,9 @@ async fn ensure_cropped_thumbnail(
         if r.output_path == output_path {
             return true;
         }
-        if let (Ok(p), Ok(rp)) = (fs::canonicalize(&path), fs::canonicalize(&r.output_path)) {
-            return p == rp;
+        // 字符串不匹配时才走 canonical 慢路径
+        if let Ok(rp) = fs::canonicalize(&r.output_path) {
+            return path == rp;
         }
         false
     });
@@ -1375,7 +1393,7 @@ fn delete_original_image(state: tauri::State<'_, AppState>, source_path: String)
     Ok(())
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Clone, Debug)]
 struct SaveRecropRequest {
     old_output_path: String,
     crop: SaveCropRequest,
@@ -1503,6 +1521,56 @@ fn preview_crop(
     })
 }
 
+fn save_recrop_blocking(
+    source_dir: &str,
+    output_dir: &str,
+    request: &SaveRecropRequest,
+) -> Result<CropRecord, String> {
+    let mut records = read_crops(source_dir)?;
+    let idx = records
+        .iter()
+        .position(|r| r.output_path == request.old_output_path)
+        .ok_or_else(|| "未找到旧裁剪记录".to_string())?;
+
+    let canon = validate_source_path(source_dir, &request.crop.source_path)?;
+    let mut record = create_crop_file(
+        &canon,
+        source_dir,
+        output_dir,
+        &request.crop.crop_name,
+        request.crop.x,
+        request.crop.y,
+        request.crop.width,
+        request.crop.height,
+        &request.crop.ratio_mode,
+        &request.crop.output_mode,
+    )?;
+    record.rating = request.crop.rating.min(3);
+
+    records[idx] = record.clone();
+
+    if let Err(e) = write_crops(source_dir, &records) {
+        if let Err(del_e) = fs::remove_file(&record.output_path) {
+            eprintln!("写入 crops.json 失败后清理新裁剪图失败: {}", del_e);
+        }
+        return Err(e);
+    }
+
+    let old_path = fs::canonicalize(&request.old_output_path).ok();
+    let output_root = fs::canonicalize(output_dir).map_err(|e| format!("输出目录无效: {}", e))?;
+
+    if let Some(old_path) = old_path {
+        let new_path = fs::canonicalize(&record.output_path).ok();
+        if old_path.starts_with(&output_root) && Some(old_path.as_path()) != new_path.as_deref() {
+            if let Err(e) = fs::remove_file(&old_path) {
+                eprintln!("删除旧裁剪图失败: {}", e);
+            }
+        }
+    }
+
+    Ok(record)
+}
+
 #[tauri::command]
 async fn save_recrop(
     handle: AppHandle,
@@ -1517,49 +1585,16 @@ async fn save_recrop(
         (settings.source_dir.clone(), settings.output_dir.clone())
     };
 
-    let mut records = read_crops(&source_dir)?;
-    let idx = records
-        .iter()
-        .position(|r| r.output_path == request.old_output_path)
-        .ok_or_else(|| "未找到旧裁剪记录".to_string())?;
+    let source_dir_clone = source_dir.clone();
+    let output_dir_clone = output_dir.clone();
+    let request_clone = request;
+    let record = tauri::async_runtime::spawn_blocking(move || {
+        save_recrop_blocking(&source_dir_clone, &output_dir_clone, &request_clone)
+    })
+    .await
+    .map_err(|e| format!("重裁保存任务失败: {}", e))
+    .and_then(|r| r)?;
 
-    let canon = validate_source_path(&source_dir, &request.crop.source_path)?;
-    let mut record = create_crop_file(
-        &canon,
-        &source_dir,
-        &output_dir,
-        &request.crop.crop_name,
-        request.crop.x,
-        request.crop.y,
-        request.crop.width,
-        request.crop.height,
-        &request.crop.ratio_mode,
-        &request.crop.output_mode,
-    )?;
-    record.rating = request.crop.rating.min(3);
-
-    records[idx] = record.clone();
-
-    if let Err(e) = write_crops(&source_dir, &records) {
-        if let Err(del_e) = fs::remove_file(&record.output_path) {
-            eprintln!("写入 crops.json 失败后清理新裁剪图失败: {}", del_e);
-        }
-        return Err(e);
-    }
-
-    let old_path = fs::canonicalize(&request.old_output_path).ok();
-    let output_root = fs::canonicalize(&output_dir).map_err(|e| format!("输出目录无效: {}", e))?;
-
-    if let Some(old_path) = old_path {
-        let new_path = fs::canonicalize(&record.output_path).ok();
-        if old_path.starts_with(&output_root) && Some(old_path.as_path()) != new_path.as_deref() {
-            if let Err(e) = fs::remove_file(&old_path) {
-                eprintln!("删除旧裁剪图失败: {}", e);
-            }
-        }
-    }
-
-    // 后台生成缩略图，不阻塞保存响应
     let thumb_handle = handle.clone();
     let thumb_path = record.output_path.clone();
     tauri::async_runtime::spawn(async move {
