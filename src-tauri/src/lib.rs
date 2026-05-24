@@ -778,10 +778,46 @@ fn source_dir_hash(source_dir: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+fn thumb_meta_path(thumb_path: &Path) -> PathBuf {
+    let filename = thumb_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("thumb");
+    thumb_path.with_file_name(format!("{}.meta", filename))
+}
+
+fn write_thumb_meta(
+    meta_path: &Path,
+    size: u64,
+    mtime: std::time::SystemTime,
+) -> Result<(), String> {
+    let dur = mtime.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap_or_default();
+    let content = format!("{}|{}|{}", size, dur.as_secs(), dur.subsec_nanos());
+    fs::write(meta_path, content).map_err(|e| format!("写入缩略图 meta 失败: {}", e))
+}
+
+fn read_thumb_meta(meta_path: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let content = fs::read_to_string(meta_path).ok()?;
+    let mut parts = content.split('|');
+    let size: u64 = parts.next()?.parse().ok()?;
+    let secs: u64 = parts.next()?.parse().ok()?;
+    let nanos: u32 = parts.next()?.parse().ok()?;
+    let mtime = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::new(secs, nanos);
+    Some((size, mtime))
+}
+
 fn is_thumb_stale(source_path: &Path, thumb_path: &Path) -> bool {
-    let source_mtime = fs::metadata(source_path).and_then(|m| m.modified()).ok();
-    let thumb_mtime = fs::metadata(thumb_path).and_then(|m| m.modified()).ok();
-    matches!((source_mtime, thumb_mtime), (Some(sm), Some(tm)) if sm > tm)
+    let meta_path = thumb_meta_path(thumb_path);
+    let (saved_size, saved_mtime) = match read_thumb_meta(&meta_path) {
+        Some(v) => v,
+        None => return true,
+    };
+    let source_meta = match fs::metadata(source_path) {
+        Ok(m) => m,
+        Err(_) => return true,
+    };
+    source_meta.len() != saved_size
+        || source_meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH) != saved_mtime
 }
 
 #[tauri::command]
@@ -826,6 +862,7 @@ async fn ensure_thumbnail(
 
     if thumb_path.exists() {
         let _ = fs::remove_file(&thumb_path);
+        let _ = fs::remove_file(&thumb_meta_path(&thumb_path));
     }
 
     let canon_clone = canon.clone();
@@ -838,6 +875,12 @@ async fn ensure_thumbnail(
         thumb
             .save(&thumb_path_clone)
             .map_err(|e| format!("保存缩略图失败: {}", e))?;
+
+        let source_meta = fs::metadata(&canon_clone).map_err(|e| format!("读取源文件元数据失败: {}", e))?;
+        let mtime = source_meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let meta_path = thumb_meta_path(&thumb_path_clone);
+        write_thumb_meta(&meta_path, source_meta.len(), mtime)?;
+
         Ok::<(), String>(())
     })
     .await
