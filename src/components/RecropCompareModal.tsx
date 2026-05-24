@@ -22,7 +22,8 @@ export function RecropCompareModal({ oldRecord, preview, onConfirm, onAdjust, on
       .then((path) => {
         if (!cancelled) setOldPath(path);
       })
-      .catch(() => {
+      .catch((err) => {
+        console.error('resolveCroppedImagePath failed', err);
         if (!cancelled) setOldFailed(true);
       });
     return () => {

@@ -112,7 +112,8 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
             setThumbPaths((prev) => ({ ...prev, [img.source_path]: path }));
           }
         })
-        .catch(() => {
+        .catch((err) => {
+          console.error('ensureThumbnail failed', img.source_path, err);
           if (!cancelled) {
             setFailedThumbs((prev) => new Set([...prev, img.source_path]));
           }

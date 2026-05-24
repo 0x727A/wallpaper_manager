@@ -2,10 +2,12 @@ use base64::Engine;
 use chrono::Local;
 use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use walkdir::WalkDir;
 
@@ -82,10 +84,22 @@ pub struct BatchFailure {
 }
 
 #[derive(Serialize, Clone, Debug)]
+pub struct BatchProgress {
+    pub total: usize,
+    pub done: usize,
+    pub success: usize,
+    pub failed: usize,
+    pub current: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
 pub struct BatchResult {
     pub success: usize,
     pub failed: usize,
     pub failures: Vec<BatchFailure>,
+    pub cancelled: bool,
+    pub total: usize,
+    pub done: usize,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -99,6 +113,7 @@ pub struct PreviewImage {
 
 pub struct AppState {
     pub settings: Mutex<Settings>,
+    pub cancel_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 // ── Helpers ──
@@ -618,15 +633,16 @@ fn get_settings(state: tauri::State<AppState>) -> Result<Settings, String> {
 #[tauri::command]
 fn set_output_dir(
     handle: AppHandle,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<Settings, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|e| format!("锁错误: {}", e))?;
-    let source_dir = settings.source_dir.clone();
-    drop(settings);
+    let source_dir = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        settings.source_dir.clone()
+    };
 
     let canon = validate_output_dir(&path, &source_dir)?;
     let canon_str = path_string(&canon);
@@ -642,7 +658,7 @@ fn set_output_dir(
 #[tauri::command]
 fn set_source_dir(
     handle: AppHandle,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<Settings, String> {
     if path.trim().is_empty() {
@@ -784,7 +800,7 @@ async fn ensure_thumbnail(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("thumb.jpg");
-    let thumb_path = thumb_dir.join(filename);
+    let thumb_path = thumb_dir.join(&filename);
 
     // Fast path: cache exists, return immediately
     if thumb_path.exists() {
@@ -812,7 +828,7 @@ async fn ensure_thumbnail(
 
 #[tauri::command]
 fn read_preview_image(
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     source_path: String,
 ) -> Result<PreviewImage, String> {
     let settings = state
@@ -858,17 +874,18 @@ fn read_preview_image(
 }
 
 #[tauri::command]
-fn save_crop(
-    state: tauri::State<AppState>,
+async fn save_crop(
+    handle: AppHandle,
+    state: tauri::State<'_, AppState>,
     request: SaveCropRequest,
 ) -> Result<CropRecord, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|e| format!("锁错误: {}", e))?;
-    let source_dir = settings.source_dir.clone();
-    let output_dir = settings.output_dir.clone();
-    drop(settings);
+    let (source_dir, output_dir) = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        (settings.source_dir.clone(), settings.output_dir.clone())
+    };
 
     let canon = validate_source_path(&source_dir, &request.source_path)?;
     let mut record = create_crop_file(
@@ -894,21 +911,30 @@ fn save_crop(
         eprintln!("保存裁剪成功，但清除跳过记录失败: {}", e);
     }
 
+    // 后台生成缩略图，不阻塞保存响应
+    let thumb_handle = handle.clone();
+    let thumb_path = record.output_path.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = generate_crop_thumbnail(&thumb_handle, &thumb_path).await {
+            eprintln!("保存裁剪成功，但生成缩略图失败: {}", e);
+        }
+    });
+
     Ok(record)
 }
 
 #[tauri::command]
 fn delete_crop_record(
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     output_path: String,
 ) -> Result<CropRecord, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|e| format!("锁错误: {}", e))?;
-    let source_dir = settings.source_dir.clone();
-    let output_dir = settings.output_dir.clone();
-    drop(settings);
+    let (source_dir, output_dir) = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        (settings.source_dir.clone(), settings.output_dir.clone())
+    };
 
     // 1. 读 crops.json，先确认记录存在
     let mut records = read_crops(&source_dir)?;
@@ -964,24 +990,29 @@ fn read_crop_records(state: tauri::State<AppState>) -> Result<Vec<CropRecord>, S
 #[tauri::command]
 fn resolve_cropped_image_path(
     handle: AppHandle,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     output_path: String,
 ) -> Result<String, String> {
     let settings = state
         .settings
         .lock()
         .map_err(|e| format!("锁错误: {}", e))?;
-    let output_root = if settings.output_dir.is_empty() {
-        return Err("输出目录未设置".into());
-    } else {
-        fs::canonicalize(&settings.output_dir).map_err(|e| format!("输出目录无效: {}", e))?
-    };
+    let source_dir = settings.source_dir.clone();
     drop(settings);
 
+    let records = read_crops(&source_dir)?;
     let path = fs::canonicalize(&output_path).map_err(|e| format!("裁剪图不存在: {}", e))?;
-
-    if !path.starts_with(&output_root) {
-        return Err("裁剪图不在输出目录内".into());
+    let found = records.iter().any(|r| {
+        if r.output_path == output_path {
+            return true;
+        }
+        if let (Ok(p), Ok(rp)) = (fs::canonicalize(&path), fs::canonicalize(&r.output_path)) {
+            return p == rp;
+        }
+        false
+    });
+    if !found {
+        return Err("裁剪图不在记录中".into());
     }
 
     if !is_image_file(&path) {
@@ -995,42 +1026,34 @@ fn resolve_cropped_image_path(
     Ok(path_string(&path))
 }
 
-#[tauri::command]
-async fn ensure_cropped_thumbnail(
-    handle: AppHandle,
-    state: tauri::State<'_, AppState>,
-    output_path: String,
+async fn generate_crop_thumbnail(
+    handle: &AppHandle,
+    output_path: &str,
 ) -> Result<String, String> {
-    let output_root = {
-        let settings = state
-            .settings
-            .lock()
-            .map_err(|e| format!("锁错误: {}", e))?;
-        if settings.output_dir.is_empty() {
-            return Err("输出目录未设置".into());
-        }
-        fs::canonicalize(&settings.output_dir).map_err(|e| format!("输出目录无效: {}", e))?
-    };
-
-    let path = fs::canonicalize(&output_path).map_err(|e| format!("裁剪图不存在: {}", e))?;
-    if !path.starts_with(&output_root) {
-        return Err("裁剪图不在输出目录内".into());
-    }
-    if !is_image_file(&path) {
-        return Err("不是支持的图片文件".into());
-    }
+    let path = fs::canonicalize(output_path).map_err(|e| format!("裁剪图不存在: {}", e))?;
 
     let cache_dir = handle
         .path()
         .app_cache_dir()
         .map_err(|e| format!("无法获取缓存目录: {}", e))?;
-    let rel = path.strip_prefix(&output_root).map_err(|_| "无法计算相对路径")?;
-    let thumb_dir = cache_dir.join("crop_thumbs").join(rel.parent().unwrap_or(Path::new("")));
+    let hash = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        path.to_string_lossy().hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    };
+    let thumb_dir = cache_dir
+        .join("crop_thumbs")
+        .join(&hash[..2])
+        .join(&hash[2..4])
+        .join(&hash);
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("thumb.jpg");
-    let thumb_path = thumb_dir.join(filename);
+        .unwrap_or("thumb.jpg")
+        .to_string();
+    let thumb_path = thumb_dir.join(&filename);
 
     if thumb_path.exists() {
         return Ok(path_string(&thumb_path));
@@ -1039,13 +1062,24 @@ async fn ensure_cropped_thumbnail(
     let path_clone = path.clone();
     let thumb_dir_clone = thumb_dir.clone();
     let thumb_path_clone = thumb_path.clone();
+    let hash_clone = hash.clone();
     tauri::async_runtime::spawn_blocking(move || {
         fs::create_dir_all(&thumb_dir_clone).map_err(|e| format!("创建缩略图目录失败: {}", e))?;
         let img = image::open(&path_clone).map_err(|e| format!("打开图片失败: {}", e))?;
         let thumb = img.thumbnail(360, 360);
+        let unique_suffix = format!("{:?}", std::thread::current().id());
+        let tmp_name = format!(".tmp.{}.{}.{}", hash_clone, unique_suffix, filename);
+        let tmp_path = thumb_dir_clone.join(&tmp_name);
         thumb
-            .save(&thumb_path_clone)
+            .save(&tmp_path)
             .map_err(|e| format!("保存缩略图失败: {}", e))?;
+        if let Err(e) = fs::rename(&tmp_path, &thumb_path_clone) {
+            if thumb_path_clone.exists() {
+                let _ = fs::remove_file(&tmp_path);
+                return Ok(());
+            }
+            return Err(format!("重命名缩略图失败: {}", e));
+        }
         Ok::<(), String>(())
     })
     .await
@@ -1055,57 +1089,110 @@ async fn ensure_cropped_thumbnail(
 }
 
 #[tauri::command]
-fn run_batch_from_json(
-    state: tauri::State<AppState>,
-    json_path: String,
-    output_dir: String,
-) -> Result<BatchResult, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|e| format!("锁错误: {}", e))?;
-    let source_dir = settings.source_dir.clone();
-    drop(settings);
+async fn ensure_cropped_thumbnail(
+    handle: AppHandle,
+    state: tauri::State<'_, AppState>,
+    output_path: String,
+) -> Result<String, String> {
+    let source_dir = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        settings.source_dir.clone()
+    };
 
-    let json_meta = fs::metadata(&json_path).map_err(|e| format!("无法访问 JSON 文件: {}", e))?;
-    if !json_meta.is_file() || !json_path.to_lowercase().ends_with(".json") {
-        return Err("请选择有效的 JSON 文件".into());
+    let records = read_crops(&source_dir)?;
+    let path = fs::canonicalize(&output_path).map_err(|e| format!("裁剪图不存在: {}", e))?;
+    let found = records.iter().any(|r| {
+        if r.output_path == output_path {
+            return true;
+        }
+        if let (Ok(p), Ok(rp)) = (fs::canonicalize(&path), fs::canonicalize(&r.output_path)) {
+            return p == rp;
+        }
+        false
+    });
+    if !found {
+        return Err("裁剪图不在记录中".into());
+    }
+    if !is_image_file(&path) {
+        return Err("不是支持的图片文件".into());
     }
 
-    let output_dir = path_string(&validate_output_dir(&output_dir, &source_dir)?);
-    let text = fs::read_to_string(&json_path).map_err(|e| format!("读取 JSON 失败: {}", e))?;
+    generate_crop_thumbnail(&handle, &output_path).await
+}
+
+fn run_batch_from_json_blocking(
+    source_dir: &str,
+    output_dir: &str,
+    json_path: &str,
+    handle: &AppHandle,
+    job_id: &str,
+    cancel_flag: &AtomicBool,
+) -> Result<BatchResult, String> {
+    let text = fs::read_to_string(json_path).map_err(|e| format!("读取 JSON 失败: {}", e))?;
     let records: Vec<CropRecord> =
         serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
 
-    let mut existing_records = read_crops(&source_dir)?;
+    let mut existing_records = read_crops(source_dir)?;
+    let total = records.len();
     let mut success = 0usize;
     let mut failures = Vec::new();
-    let mut successful_relative_paths = Vec::new();
+    let mut successful_relative_paths: HashSet<String> = HashSet::new();
 
-    for record in records {
-        // 优先用 current_source_dir + relative_path 找原图，fallback 到 record.source_path
-        let candidate = Path::new(&source_dir).join(&record.relative_path);
+    let _ = handle.emit(
+        format!("batch-progress-{}", job_id).as_str(),
+        BatchProgress {
+            total,
+            done: 0,
+            success: 0,
+            failed: 0,
+            current: "".to_string(),
+        },
+    );
+
+    let mut done = 0usize;
+    for record in records.into_iter() {
+        if cancel_flag.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let current_path = record.relative_path.clone();
+
+        let candidate = Path::new(source_dir).join(&record.relative_path);
         let source_path_str = if candidate.exists() {
             path_string(&candidate)
         } else {
             record.source_path.clone()
         };
 
-        let source = match validate_source_path(&source_dir, &source_path_str) {
+        let source = match validate_source_path(source_dir, &source_path_str) {
             Ok(p) => p,
             Err(e) => {
                 failures.push(BatchFailure {
                     source_path: record.source_path,
                     reason: e,
                 });
+                done += 1;
+                let _ = handle.emit(
+                    format!("batch-progress-{}", job_id).as_str(),
+                    BatchProgress {
+                        total,
+                        done,
+                        success,
+                        failed: failures.len(),
+                        current: current_path,
+                    },
+                );
                 continue;
             }
         };
 
         match create_crop_file(
             &source,
-            &source_dir,
-            &output_dir,
+            source_dir,
+            output_dir,
             &record.crop_name,
             record.x,
             record.y,
@@ -1117,7 +1204,7 @@ fn run_batch_from_json(
             Ok(mut new_record) => {
                 new_record.rating = record.rating.min(3);
                 success += 1;
-                successful_relative_paths.push(new_record.relative_path.clone());
+                successful_relative_paths.insert(new_record.relative_path.clone());
                 existing_records.push(new_record);
             }
             Err(e) => failures.push(BatchFailure {
@@ -1125,30 +1212,130 @@ fn run_batch_from_json(
                 reason: e,
             }),
         }
+        done += 1;
+        let _ = handle.emit(
+            format!("batch-progress-{}", job_id).as_str(),
+            BatchProgress {
+                total,
+                done,
+                success,
+                failed: failures.len(),
+                current: current_path,
+            },
+        );
     }
 
-    write_crops(&source_dir, &existing_records)?;
+    write_crops(source_dir, &existing_records)?;
 
     if !successful_relative_paths.is_empty() {
-        let mut skipped = read_skipped(&source_dir)?;
+        let mut skipped = read_skipped(source_dir)?;
         let skipped_before = skipped.len();
         skipped.retain(|r| !successful_relative_paths.contains(&r.relative_path));
         if skipped.len() != skipped_before {
-            if let Err(e) = write_skipped(&source_dir, &skipped) {
+            if let Err(e) = write_skipped(source_dir, &skipped) {
                 eprintln!("批量裁剪成功，但清除跳过记录失败: {}", e);
             }
         }
     }
 
+    let cancelled = cancel_flag.load(Ordering::Relaxed);
+    let final_progress = BatchProgress {
+        total,
+        done,
+        success,
+        failed: failures.len(),
+        current: if cancelled { "已取消".to_string() } else { "".to_string() },
+    };
+    let _ = handle.emit(format!("batch-progress-{}", job_id).as_str(), final_progress);
+
     Ok(BatchResult {
         success,
         failed: failures.len(),
         failures,
+        cancelled,
+        total,
+        done,
     })
 }
 
 #[tauri::command]
-fn delete_original_image(state: tauri::State<AppState>, source_path: String) -> Result<(), String> {
+async fn run_batch_from_json(
+    handle: AppHandle,
+    state: tauri::State<'_, AppState>,
+    json_path: String,
+    output_dir: String,
+    job_id: String,
+) -> Result<BatchResult, String> {
+    let source_dir = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        settings.source_dir.clone()
+    };
+
+    let json_meta = fs::metadata(&json_path).map_err(|e| format!("无法访问 JSON 文件: {}", e))?;
+    if !json_meta.is_file() || !json_path.to_lowercase().ends_with(".json") {
+        return Err("请选择有效的 JSON 文件".into());
+    }
+
+    let output_dir = path_string(&validate_output_dir(&output_dir, &source_dir)?);
+
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut flags = state
+            .cancel_flags
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        flags.insert(job_id.clone(), cancel_flag.clone());
+    }
+
+    let source_dir_clone = source_dir.clone();
+    let output_dir_clone = output_dir.clone();
+    let json_path_clone = json_path.clone();
+    let handle_clone = handle.clone();
+    let job_id_clone = job_id.clone();
+    let cancel_flag_clone = cancel_flag.clone();
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        run_batch_from_json_blocking(
+            &source_dir_clone,
+            &output_dir_clone,
+            &json_path_clone,
+            &handle_clone,
+            &job_id_clone,
+            &cancel_flag_clone,
+        )
+    })
+    .await
+    .map_err(|e| format!("批量任务线程失败: {}", e))
+    .and_then(|r| r);
+
+    {
+        let mut flags = state
+            .cancel_flags
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        flags.remove(&job_id);
+    }
+
+    result
+}
+
+#[tauri::command]
+fn cancel_batch(state: tauri::State<'_, AppState>, job_id: String) -> Result<(), String> {
+    let flags = state
+        .cancel_flags
+        .lock()
+        .map_err(|e| format!("锁错误: {}", e))?;
+    if let Some(flag) = flags.get(&job_id) {
+        flag.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_original_image(state: tauri::State<'_, AppState>, source_path: String) -> Result<(), String> {
     let settings = state
         .settings
         .lock()
@@ -1203,7 +1390,7 @@ struct CropPreview {
 
 #[tauri::command]
 fn resolve_original_for_record(
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     record: CropRecord,
 ) -> Result<ImageEntry, String> {
     let settings = state
@@ -1258,7 +1445,7 @@ fn resolve_original_for_record(
 
 #[tauri::command]
 fn preview_crop(
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     request: SaveCropRequest,
 ) -> Result<CropPreview, String> {
     let settings = state
@@ -1317,17 +1504,18 @@ fn preview_crop(
 }
 
 #[tauri::command]
-fn save_recrop(
-    state: tauri::State<AppState>,
+async fn save_recrop(
+    handle: AppHandle,
+    state: tauri::State<'_, AppState>,
     request: SaveRecropRequest,
 ) -> Result<CropRecord, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|e| format!("锁错误: {}", e))?;
-    let source_dir = settings.source_dir.clone();
-    let output_dir = settings.output_dir.clone();
-    drop(settings);
+    let (source_dir, output_dir) = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        (settings.source_dir.clone(), settings.output_dir.clone())
+    };
 
     let mut records = read_crops(&source_dir)?;
     let idx = records
@@ -1371,6 +1559,15 @@ fn save_recrop(
         }
     }
 
+    // 后台生成缩略图，不阻塞保存响应
+    let thumb_handle = handle.clone();
+    let thumb_path = record.output_path.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = generate_crop_thumbnail(&thumb_handle, &thumb_path).await {
+            eprintln!("重裁保存成功，但生成缩略图失败: {}", e);
+        }
+    });
+
     Ok(record)
 }
 
@@ -1382,7 +1579,7 @@ fn read_skip_records(state: tauri::State<AppState>) -> Result<Vec<SkipRecord>, S
 
 #[tauri::command]
 fn skip_image(
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     source_path: String,
 ) -> Result<SkipRecord, String> {
     let settings = state.settings.lock().map_err(|e| format!("锁错误: {}", e))?;
@@ -1410,7 +1607,7 @@ fn skip_image(
 
 #[tauri::command]
 fn unskip_image(
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     source_path: String,
 ) -> Result<(), String> {
     let settings = state.settings.lock().map_err(|e| format!("锁错误: {}", e))?;
@@ -1561,6 +1758,7 @@ pub fn run() {
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             app.manage(AppState {
                 settings: Mutex::new(settings),
+                cancel_flags: Mutex::new(HashMap::new()),
             });
 
             let cache_dir = app
@@ -1648,6 +1846,7 @@ pub fn run() {
             save_crop,
             read_crop_records,
             run_batch_from_json,
+            cancel_batch,
             delete_original_image,
             resolve_cropped_image_path,
             ensure_cropped_thumbnail,

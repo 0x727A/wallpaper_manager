@@ -70,7 +70,8 @@ export function ImageEditor({ image, existingCrops, onSave, onSaveAndContinue, o
         if (cancelled) return;
         setPreview(p);
       })
-      .catch(() => {
+      .catch((err) => {
+        console.error('readPreviewImage failed', err);
         if (!cancelled) setPreview(null);
       });
     return () => { cancelled = true; };

@@ -47,10 +47,21 @@ export interface BatchFailure {
   reason: string;
 }
 
+export interface BatchProgress {
+  total: number;
+  done: number;
+  success: number;
+  failed: number;
+  current: string;
+}
+
 export interface BatchResult {
   success: number;
   failed: number;
   failures: BatchFailure[];
+  cancelled: boolean;
+  total: number;
+  done: number;
 }
 
 export interface SkipRecord {
@@ -107,8 +118,11 @@ export const saveCrop = (request: SaveCropRequest): Promise<CropRecord> =>
 export const readCropRecords = (): Promise<CropRecord[]> =>
   invoke('read_crop_records');
 
-export const runBatchFromJson = (jsonPath: string, outputDir: string): Promise<BatchResult> =>
-  invoke('run_batch_from_json', { jsonPath, outputDir });
+export const runBatchFromJson = (jsonPath: string, outputDir: string, jobId: string): Promise<BatchResult> =>
+  invoke('run_batch_from_json', { jsonPath, outputDir, jobId });
+
+export const cancelBatch = (jobId: string): Promise<void> =>
+  invoke('cancel_batch', { jobId });
 
 export const deleteOriginalImage = (sourcePath: string): Promise<void> =>
   invoke('delete_original_image', { sourcePath });

@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { FolderOpen, ScanLine, Eye, EyeOff, FileJson, CheckSquare, Square, Images } from 'lucide-react';
+import { FolderOpen, ScanLine, Eye, EyeOff, FileJson, CheckSquare, Square, Images, X } from 'lucide-react';
+import { listen } from '@tauri-apps/api/event';
 import {
   Settings as SettingsType,
   pickOutputDir,
@@ -8,7 +9,9 @@ import {
   setSourceDir,
   pickJsonFile,
   runBatchFromJson,
+  cancelBatch,
   BatchResult,
+  BatchProgress,
 } from '../api';
 
 function dirName(path: string): string {
@@ -44,6 +47,8 @@ export function SettingsBar({
 }: Props) {
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchResult, setBatchResult] = useState<BatchResult | null>(null);
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
+  const [batchJobId, setBatchJobId] = useState<string | null>(null);
 
   const handlePickOutputDir = async () => {
     const path = await pickOutputDir();
@@ -61,29 +66,49 @@ export function SettingsBar({
     }
   };
 
+  const handleCancelBatch = async () => {
+    if (batchJobId) {
+      await cancelBatch(batchJobId);
+    }
+  };
+
   const handleBatchCrop = async () => {
     const jsonPath = await pickJsonFile();
     if (!jsonPath) return;
+    const jobId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
     setBatchRunning(true);
     setBatchResult(null);
+    setBatchProgress(null);
+    setBatchJobId(jobId);
+    let unlisten: (() => void) | null = null;
     try {
-      const result: BatchResult = await runBatchFromJson(jsonPath, settings.output_dir);
+      unlisten = await listen<BatchProgress>(`batch-progress-${jobId}`, (event) => {
+        setBatchProgress(event.payload);
+      });
+      const result = await runBatchFromJson(jsonPath, settings.output_dir, jobId);
       setBatchResult(result);
-      const msg = `批量裁剪完成：成功 ${result.success} 条，失败 ${result.failed} 条`;
-      if (result.failed > 0 && result.failures.length > 0) {
-        const details = result.failures
-          .slice(0, 5)
-          .map((f) => `  ${f.source_path}: ${f.reason}`)
-          .join('\n');
-        alert(msg + '\n\n失败详情（前5条）:\n' + details);
+      if (result.cancelled) {
+        alert(`已取消。已处理 ${result.done}/${result.total}，成功 ${result.success}，失败 ${result.failed}`);
       } else {
-        alert(msg + '\n已自动清理对应跳过记录并刷新列表。');
+        const msg = `批量裁剪完成：成功 ${result.success} 条，失败 ${result.failed} 条`;
+        if (result.failed > 0 && result.failures.length > 0) {
+          const details = result.failures
+            .slice(0, 5)
+            .map((f) => `  ${f.source_path}: ${f.reason}`)
+            .join('\n');
+          alert(msg + '\n\n失败详情（前5条）:\n' + details);
+        } else {
+          alert(msg + '\n已自动清理对应跳过记录并刷新列表。');
+        }
       }
       onImportComplete();
     } catch (e: any) {
       alert('批量裁剪失败: ' + (e?.message || String(e)));
     } finally {
+      if (unlisten) unlisten();
       setBatchRunning(false);
+      setBatchJobId(null);
+      setBatchProgress(null);
     }
   };
 
@@ -136,10 +161,23 @@ export function SettingsBar({
           title="选择裁剪记录 JSON 并执行批量裁剪"
         >
           <FileJson size={13} />
-          {batchRunning ? '裁剪中...' : '批量裁剪'}
+          {batchRunning && batchProgress
+            ? `裁剪中 ${batchProgress.done}/${batchProgress.total}`
+            : '批量裁剪'}
         </button>
 
-        {batchResult && (
+        {batchRunning && batchJobId && (
+          <button
+            className="btn btn-sm btn-danger"
+            onClick={handleCancelBatch}
+            title="取消批量裁剪"
+            style={{ padding: '4px 8px' }}
+          >
+            <X size={12} />
+          </button>
+        )}
+
+        {batchResult && !batchRunning && (
           <span
             style={{
               fontSize: 11,

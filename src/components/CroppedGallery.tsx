@@ -33,6 +33,7 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
   const queueRef = useRef<CropRecord[]>([]);
   const runningRef = useRef(0);
   const disposedRef = useRef(false);
+  const generationRef = useRef(0);
 
   const flushThumbs = useCallback(() => {
     if (disposedRef.current) return;
@@ -48,6 +49,7 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
   }, []);
 
   const scheduleLoad = useCallback(() => {
+    const gen = generationRef.current;
     while (runningRef.current < CONCURRENCY && queueRef.current.length > 0) {
       const record = queueRef.current.shift()!;
       const key = record.output_path;
@@ -59,19 +61,20 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
       loadingRef.current.add(key);
       ensureCroppedThumbnail(key)
         .then((path) => {
-          if (disposedRef.current) return;
+          if (generationRef.current !== gen) return;
           loadedRef.current.add(key);
           pendingThumbsRef.current[key] = { path, failed: false };
         })
-        .catch(() => {
-          if (disposedRef.current) return;
+        .catch((err) => {
+          console.error('ensureCroppedThumbnail failed', key, err);
+          if (generationRef.current !== gen) return;
           loadedRef.current.add(key);
           pendingThumbsRef.current[key] = { path: '', failed: true };
         })
         .finally(() => {
-          if (disposedRef.current) return;
+          if (generationRef.current !== gen) return;
           loadingRef.current.delete(key);
-          runningRef.current--;
+          runningRef.current = Math.max(0, runningRef.current - 1);
           flushThumbs();
           scheduleLoad();
         });
@@ -129,22 +132,10 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
   const virtualItems = virtualizer.getVirtualItems();
 
   useEffect(() => {
-    const toLoad: CropRecord[] = [];
-    for (const row of virtualItems) {
-      const start = row.index * layout.cols;
-      const end = Math.min(start + layout.cols, sorted.length);
-      for (let i = start; i < end; i++) {
-        toLoad.push(sorted[i]);
-      }
-    }
-    for (const r of toLoad) {
-      loadThumb(r);
-    }
-  }, [virtualItems, sorted, layout.cols, loadThumb]);
-
-  useEffect(() => {
+    generationRef.current++;
     disposedRef.current = false;
     return () => {
+      generationRef.current++;
       disposedRef.current = true;
       setThumbs({});
       loadedRef.current.clear();
@@ -159,6 +150,20 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
       pendingThumbsRef.current = {};
     };
   }, []);
+
+  useEffect(() => {
+    const toLoad: CropRecord[] = [];
+    for (const row of virtualItems) {
+      const start = row.index * layout.cols;
+      const end = Math.min(start + layout.cols, sorted.length);
+      for (let i = start; i < end; i++) {
+        toLoad.push(sorted[i]);
+      }
+    }
+    for (const r of toLoad) {
+      loadThumb(r);
+    }
+  }, [virtualItems, sorted, layout.cols, loadThumb]);
 
   const total = sorted.length;
   const currentRecord = previewIndex !== null ? sorted[previewIndex] : null;
@@ -175,7 +180,8 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
           setPreviewFailed(false);
         }
       })
-      .catch(() => {
+      .catch((err) => {
+        console.error('resolveCroppedImagePath failed', err);
         if (!cancelled) setPreviewFailed(true);
       });
     return () => {
