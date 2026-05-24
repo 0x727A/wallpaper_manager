@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { X, ImageOff, Calendar, Ruler, FileText, Folder, ChevronLeft, ChevronRight, Scissors, Trash2 } from 'lucide-react';
-import { CropRecord, readCroppedImageAsDataUrl, deleteCropRecord } from '../api';
+import { CropRecord, resolveCroppedImagePath, ensureCroppedThumbnail, deleteCropRecord, convertFileSrc } from '../api';
 
 interface Props {
   records: CropRecord[];
@@ -9,72 +10,178 @@ interface Props {
   onDeleteCropRecord?: (deleted: CropRecord) => void;
 }
 
+interface SortedRecord extends CropRecord {
+  createdLabel: string;
+}
+
+const GAP = 16;
+const MIN_CARD_WIDTH = 240;
+const INFO_HEIGHT = 132;
+const CONCURRENCY = 4;
+
 export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord }: Props) {
-  const [thumbs, setThumbs] = useState<Record<string, { url: string; failed: boolean }>>({});
+  const [thumbs, setThumbs] = useState<Record<string, { path: string; failed: boolean }>>({});
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  const [previewFailed, setPreviewFailed] = useState(false);
 
   const loadingRef = useRef<Set<string>>(new Set());
   const loadedRef = useRef<Set<string>>(new Set());
+  const queuedRef = useRef<Set<string>>(new Set());
+  const pendingThumbsRef = useRef<Record<string, { path: string; failed: boolean }>>({});
+  const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queueRef = useRef<CropRecord[]>([]);
+  const runningRef = useRef(0);
+  const disposedRef = useRef(false);
 
-  const loadThumb = useCallback(async (record: CropRecord) => {
-    const key = record.output_path;
-    if (loadedRef.current.has(key)) return;
-    if (loadingRef.current.has(key)) return;
-    loadingRef.current.add(key);
-    try {
-      const url = await readCroppedImageAsDataUrl(key);
-      loadedRef.current.add(key);
-      setThumbs((prev) => ({ ...prev, [key]: { url, failed: false } }));
-    } catch {
-      loadedRef.current.add(key);
-      setThumbs((prev) => ({ ...prev, [key]: { url: '', failed: true } }));
-    } finally {
-      loadingRef.current.delete(key);
-    }
+  const flushThumbs = useCallback(() => {
+    if (disposedRef.current) return;
+    if (flushTimeoutRef.current !== null) return;
+    flushTimeoutRef.current = setTimeout(() => {
+      flushTimeoutRef.current = null;
+      if (disposedRef.current) return;
+      if (Object.keys(pendingThumbsRef.current).length > 0) {
+        setThumbs((prev) => ({ ...prev, ...pendingThumbsRef.current }));
+        pendingThumbsRef.current = {};
+      }
+    }, 50);
   }, []);
 
-  const sorted = useMemo(() => {
-    return [...records].sort((a, b) => {
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-    });
+  const scheduleLoad = useCallback(() => {
+    while (runningRef.current < CONCURRENCY && queueRef.current.length > 0) {
+      const record = queueRef.current.shift()!;
+      const key = record.output_path;
+      queuedRef.current.delete(key);
+      if (loadedRef.current.has(key) || loadingRef.current.has(key)) {
+        continue;
+      }
+      runningRef.current++;
+      loadingRef.current.add(key);
+      ensureCroppedThumbnail(key)
+        .then((path) => {
+          if (disposedRef.current) return;
+          loadedRef.current.add(key);
+          pendingThumbsRef.current[key] = { path, failed: false };
+        })
+        .catch(() => {
+          if (disposedRef.current) return;
+          loadedRef.current.add(key);
+          pendingThumbsRef.current[key] = { path: '', failed: true };
+        })
+        .finally(() => {
+          if (disposedRef.current) return;
+          loadingRef.current.delete(key);
+          runningRef.current--;
+          flushThumbs();
+          scheduleLoad();
+        });
+    }
+  }, [flushThumbs]);
+
+  const loadThumb = useCallback((record: CropRecord) => {
+    const key = record.output_path;
+    if (loadedRef.current.has(key) || loadingRef.current.has(key) || queuedRef.current.has(key)) return;
+    queuedRef.current.add(key);
+    queueRef.current.push(record);
+    scheduleLoad();
+  }, [scheduleLoad]);
+
+  const sorted = useMemo((): SortedRecord[] => {
+    return [...records]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .map((r) => ({
+        ...r,
+        createdLabel: new Date(r.created_at).toLocaleDateString('zh-CN'),
+      }));
   }, [records]);
 
-  const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const parentRef = useRef<HTMLDivElement>(null);
+  const [layout, setLayout] = useState({ cols: 3, cardHeight: 282 });
 
   useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            const idx = Number((entry.target as HTMLElement).dataset.index);
-            if (!isNaN(idx) && sorted[idx]) {
-              loadThumb(sorted[idx]);
-            }
-            observer.unobserve(entry.target);
-          }
-        });
-      },
-      { rootMargin: '200px' }
-    );
-
-    itemRefs.current.forEach((el) => {
-      if (el) observer.observe(el);
+    const el = parentRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width;
+        const c = Math.max(1, Math.floor((w + GAP) / (MIN_CARD_WIDTH + GAP)));
+        const cardW = (w - (c - 1) * GAP) / c;
+        const imgH = cardW * 10 / 16;
+        const h = Math.ceil(imgH + INFO_HEIGHT);
+        setLayout({ cols: c, cardHeight: h });
+      }
     });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
-    return () => observer.disconnect();
-  }, [sorted, loadThumb]);
+  const rowCount = Math.ceil(sorted.length / layout.cols);
+
+  const virtualizer = useVirtualizer({
+    count: rowCount,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => layout.cardHeight,
+    overscan: 3,
+    gap: GAP,
+    measureElement: (el) => el.getBoundingClientRect().height,
+  });
+
+  const virtualItems = virtualizer.getVirtualItems();
+
+  useEffect(() => {
+    const toLoad: CropRecord[] = [];
+    for (const row of virtualItems) {
+      const start = row.index * layout.cols;
+      const end = Math.min(start + layout.cols, sorted.length);
+      for (let i = start; i < end; i++) {
+        toLoad.push(sorted[i]);
+      }
+    }
+    for (const r of toLoad) {
+      loadThumb(r);
+    }
+  }, [virtualItems, sorted, layout.cols, loadThumb]);
+
+  useEffect(() => {
+    disposedRef.current = false;
+    return () => {
+      disposedRef.current = true;
+      setThumbs({});
+      loadedRef.current.clear();
+      loadingRef.current.clear();
+      queuedRef.current.clear();
+      queueRef.current = [];
+      runningRef.current = 0;
+      if (flushTimeoutRef.current) {
+        clearTimeout(flushTimeoutRef.current);
+        flushTimeoutRef.current = null;
+      }
+      pendingThumbsRef.current = {};
+    };
+  }, []);
 
   const total = sorted.length;
   const currentRecord = previewIndex !== null ? sorted[previewIndex] : null;
-  const currentThumb = currentRecord ? thumbs[currentRecord.output_path] : null;
-
-  const currentOutputPath = currentRecord?.output_path;
 
   useEffect(() => {
-    if (currentRecord && currentOutputPath && !thumbs[currentOutputPath] && !loadingRef.current.has(currentOutputPath)) {
-      loadThumb(currentRecord);
-    }
-  }, [currentRecord, currentOutputPath, thumbs, loadThumb]);
+    setPreviewPath(null);
+    setPreviewFailed(false);
+    if (!currentRecord) return;
+    let cancelled = false;
+    resolveCroppedImagePath(currentRecord.output_path)
+      .then((path) => {
+        if (!cancelled) {
+          setPreviewPath(path);
+          setPreviewFailed(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentRecord]);
 
   const goPrev = useCallback(() => {
     setPreviewIndex((i) => {
@@ -144,7 +251,6 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
         inset: 0,
         zIndex: 100,
         background: 'rgba(0,0,0,0.75)',
-        backdropFilter: 'blur(8px)',
         display: 'flex',
         flexDirection: 'column',
       }}
@@ -173,6 +279,7 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
 
       {/* Grid */}
       <div
+        ref={parentRef}
         style={{
           flex: 1,
           overflowY: 'auto',
@@ -186,98 +293,117 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
             <div className="empty-state-title">还没有已裁剪图片</div>
           </div>
         ) : (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-              gap: 16,
-            }}
-          >
-            {sorted.map((r, i) => {
-              const thumb = thumbs[r.output_path];
+          <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
+            {virtualItems.map((virtualRow) => {
+              const startIdx = virtualRow.index * layout.cols;
+              const endIdx = Math.min(startIdx + layout.cols, sorted.length);
+              const rowRecords = sorted.slice(startIdx, endIdx);
               return (
                 <div
-                  key={r.output_path}
-                  ref={(el) => { itemRefs.current[i] = el; }}
-                  data-index={i}
+                  key={virtualRow.key}
+                  ref={virtualizer.measureElement}
+                  data-index={virtualRow.index}
                   style={{
-                    background: 'var(--panel-2)',
-                    borderRadius: 12,
-                    border: '1px solid var(--border)',
-                    overflow: 'hidden',
-                    display: 'flex',
-                    flexDirection: 'column',
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualRow.start}px)`,
+                    display: 'grid',
+                    gridTemplateColumns: `repeat(${layout.cols}, 1fr)`,
+                    gap: GAP,
                   }}
                 >
-                  {/* Thumbnail */}
-                  <div
-                    style={{
-                      aspectRatio: '16 / 10',
-                      background: 'var(--canvas)',
-                      cursor: thumb?.url ? 'zoom-in' : 'default',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      overflow: 'hidden',
-                    }}
-                    onClick={() => {
-                      if (thumb?.url) openPreview(i);
-                    }}
-                  >
-                    {thumb?.url ? (
-                      <img
-                        src={thumb.url}
-                        alt={r.crop_name}
-                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                      />
-                    ) : thumb?.failed ? (
-                      <div style={{ color: 'var(--muted)', fontSize: 12 }}>文件不存在</div>
-                    ) : (
-                      <div style={{ color: 'var(--muted)', fontSize: 12 }}>加载中...</div>
-                    )}
-                  </div>
-
-                  {/* Info */}
-                  <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {onRecrop && (
-                      <button
-                        className="btn btn-accent"
-                        style={{ width: '100%', fontSize: 13, marginBottom: 2 }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onRecrop(r);
+                  {rowRecords.map((r, i) => {
+                    const globalIdx = startIdx + i;
+                    const thumb = thumbs[r.output_path];
+                    return (
+                      <div
+                        key={r.output_path}
+                        style={{
+                          background: 'var(--panel-2)',
+                          borderRadius: 12,
+                          border: '1px solid var(--border)',
+                          overflow: 'hidden',
+                          display: 'flex',
+                          flexDirection: 'column',
                         }}
                       >
-                        <Scissors size={13} style={{ marginRight: 4 }} />
-                        重新裁剪此图
-                      </button>
-                    )}
-                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
-                      {r.crop_name}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <Folder size={10} />
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {r.relative_path}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <FileText size={10} />
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {r.output_filename}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                        <Ruler size={10} />
-                        {r.width}×{r.height}
-                      </span>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                        <Calendar size={10} />
-                        {new Date(r.created_at).toLocaleDateString('zh-CN')}
-                      </span>
-                    </div>
-                  </div>
+                        {/* Thumbnail */}
+                        <div
+                          style={{
+                            aspectRatio: '16 / 10',
+                            background: 'var(--canvas)',
+                            cursor: thumb?.path ? 'zoom-in' : 'default',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            overflow: 'hidden',
+                          }}
+                          onClick={() => {
+                            if (thumb?.path) openPreview(globalIdx);
+                          }}
+                        >
+                          {thumb?.path ? (
+                            <img
+                              src={convertFileSrc(thumb.path)}
+                              alt={r.crop_name}
+                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            />
+                          ) : thumb?.failed ? (
+                            <div style={{ color: 'var(--muted)', fontSize: 12 }}>文件不存在</div>
+                          ) : (
+                            <div style={{ color: 'var(--muted)', fontSize: 12 }}>加载中...</div>
+                          )}
+                        </div>
+
+                        {/* Info */}
+                        <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {onRecrop && (
+                            <button
+                              className="btn btn-accent"
+                              style={{ width: '100%', fontSize: 13, marginBottom: 2 }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onRecrop(r);
+                              }}
+                            >
+                              <Scissors size={13} style={{ marginRight: 4 }} />
+                              重新裁剪此图
+                            </button>
+                          )}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{r.crop_name}</span>
+                            {(r.rating || 0) > 0 && (
+                              <span style={{ color: 'var(--accent)', fontSize: 11 }}>{'★'.repeat(r.rating || 0)}</span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <Folder size={10} />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {r.relative_path}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <FileText size={10} />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {r.output_filename}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                              <Ruler size={10} />
+                              {r.width}×{r.height}
+                            </span>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                              <Calendar size={10} />
+                              {r.createdLabel}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })}
@@ -300,9 +426,9 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
           }}
           onClick={() => setPreviewIndex(null)}
         >
-          {currentThumb?.url ? (
+          {previewPath ? (
             <img
-              src={currentThumb.url}
+              src={convertFileSrc(previewPath)}
               alt="preview"
               style={{
                 maxWidth: '100%',
@@ -318,7 +444,7 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
                 handleImageClick(e);
               }}
             />
-          ) : currentThumb?.failed ? (
+          ) : previewFailed ? (
             <div style={{ color: '#fff', fontSize: 14 }}>文件不存在</div>
           ) : (
             <div style={{ color: '#fff', fontSize: 14 }}>加载中...</div>

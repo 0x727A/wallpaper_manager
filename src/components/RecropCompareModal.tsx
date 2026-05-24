@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Check, ArrowLeft, Trash2 } from 'lucide-react';
-import { CropRecord, CropPreview, readCroppedImageAsDataUrl } from '../api';
+import { CropRecord, CropPreview, resolveCroppedImagePath, convertFileSrc } from '../api';
 
 interface Props {
   oldRecord: CropRecord;
@@ -11,21 +11,24 @@ interface Props {
 }
 
 export function RecropCompareModal({ oldRecord, preview, onConfirm, onAdjust, onCancel }: Props) {
-  const [oldUrl, setOldUrl] = useState<string | null>(null);
+  const [oldPath, setOldPath] = useState<string | null>(null);
   const [oldFailed, setOldFailed] = useState(false);
 
-  const loadOld = useCallback(async () => {
-    try {
-      const url = await readCroppedImageAsDataUrl(oldRecord.output_path);
-      setOldUrl(url);
-    } catch {
-      setOldFailed(true);
-    }
-  }, [oldRecord.output_path]);
-
   useEffect(() => {
-    loadOld();
-  }, [loadOld]);
+    setOldPath(null);
+    setOldFailed(false);
+    let cancelled = false;
+    resolveCroppedImagePath(oldRecord.output_path)
+      .then((path) => {
+        if (!cancelled) setOldPath(path);
+      })
+      .catch(() => {
+        if (!cancelled) setOldFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [oldRecord.output_path]);
 
   return (
     <div
@@ -86,9 +89,9 @@ export function RecropCompareModal({ oldRecord, preview, onConfirm, onAdjust, on
               overflow: 'hidden',
             }}
           >
-            {oldUrl ? (
+            {oldPath ? (
               <img
-                src={oldUrl}
+                src={convertFileSrc(oldPath)}
                 alt="旧裁剪"
                 style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
               />

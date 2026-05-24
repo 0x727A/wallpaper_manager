@@ -59,6 +59,24 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
     setVisibleCount(PAGE_SIZE);
   }, [search, category, images]);
 
+  useEffect(() => {
+    const validPaths = new Set(images.map((img) => img.source_path));
+    setThumbPaths((prev) => {
+      const next: Record<string, string> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        if (validPaths.has(k)) next[k] = v;
+      }
+      return next;
+    });
+    setFailedThumbs((prev) => {
+      const next = new Set<string>();
+      for (const k of prev) {
+        if (validPaths.has(k)) next.add(k);
+      }
+      return next;
+    });
+  }, [images]);
+
   const croppedRel = useMemo(
     () => new Set(Object.values(cropRecords).flat().map((r) => r.relative_path)),
     [cropRecords]

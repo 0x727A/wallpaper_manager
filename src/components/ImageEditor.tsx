@@ -23,6 +23,7 @@ interface Props {
   image: ImageEntry;
   existingCrops: CropRecord[];
   onSave: (record: CropRecord) => void;
+  onSaveAndContinue?: (record: CropRecord) => void;
   onDelete: (sourcePath: string) => void;
   onPrev: () => void;
   onNext: () => void;
@@ -35,7 +36,7 @@ interface Props {
   onSkipImage?: () => void;
 }
 
-export function ImageEditor({ image, existingCrops, onSave, onDelete, onSkipImage, onPrev, onNext, settings, ratioMode, onRatioModeChange, recropTarget, onPreviewRecrop, onCancelRecrop }: Props) {
+export function ImageEditor({ image, existingCrops, onSave, onSaveAndContinue, onDelete, onSkipImage, onPrev, onNext, settings, ratioMode, onRatioModeChange, recropTarget, onPreviewRecrop, onCancelRecrop }: Props) {
   const [crop, setCrop] = useState<PercentCrop>();
   const [completedCrop, setCompletedCrop] = useState<PercentCrop>();
   const [cropName, setCropName] = useState('');
@@ -49,6 +50,8 @@ export function ImageEditor({ image, existingCrops, onSave, onDelete, onSkipImag
   const [guideMode, setGuideMode] = useState<GuideMode>(() => {
     return (localStorage.getItem('cropGuideMode') as GuideMode) || 'thirds';
   });
+  const [outputMode, setOutputMode] = useState<'crop' | 'mask'>('crop');
+  const [rating, setRating] = useState<0 | 1 | 2 | 3>(0);
 
   useEffect(() => {
     localStorage.setItem('cropGuideMode', guideMode);
@@ -78,6 +81,8 @@ export function ImageEditor({ image, existingCrops, onSave, onDelete, onSkipImag
     const rt = recropTarget;
     onRatioModeChange(rt.ratio_mode);
     setCropName(rt.crop_name);
+    setOutputMode((rt.output_mode as 'crop' | 'mask') ?? 'crop');
+    setRating(Math.min(3, Math.max(0, rt.rating ?? 0)) as 0 | 1 | 2 | 3);
     const percentCrop: PercentCrop = {
       unit: '%',
       x: (rt.x / rt.original_width) * 100,
@@ -191,22 +196,93 @@ export function ImageEditor({ image, existingCrops, onSave, onDelete, onSkipImag
       crop_name: cropName.trim() || (isRecropActive ? recropTarget!.crop_name : 'crop'),
       ...px,
       ratio_mode: ratioMode,
+      output_mode: outputMode,
+      rating,
     };
+  };
+
+  const doSave = async (req: SaveCropRequest) => {
+    setSaving(true);
+    try {
+      const record = await saveCrop(req);
+      return record;
+    } catch (e: any) {
+      alert('保存失败: ' + (e?.message || String(e)));
+      return null;
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSave = async () => {
     const req = buildCropRequest();
     if (!req) return;
-    setSaving(true);
-    try {
-      const record = await saveCrop(req);
+    const record = await doSave(req);
+    if (record) {
       onSave(record);
       setCropName('');
-    } catch (e: any) {
-      alert('保存失败: ' + (e?.message || String(e)));
-    } finally {
-      setSaving(false);
     }
+  };
+
+  const handleSaveAndContinue = async () => {
+    const req = buildCropRequest();
+    if (!req) return;
+    const record = await doSave(req);
+    if (record && onSaveAndContinue) {
+      onSaveAndContinue(record);
+      setCropName('');
+      const aspect = RATIOS.find((r) => r.value === ratioMode)?.aspect;
+      if (preview) {
+        initCrop(preview.original_width, preview.original_height, aspect);
+      }
+    }
+  };
+
+  const applyPixelCrop = (px: { x: number; y: number; width: number; height: number }) => {
+    if (!preview) return;
+    const newCrop: PercentCrop = {
+      unit: '%',
+      x: (px.x / preview.original_width) * 100,
+      y: (px.y / preview.original_height) * 100,
+      width: (px.width / preview.original_width) * 100,
+      height: (px.height / preview.original_height) * 100,
+    };
+    setCrop(newCrop);
+    setCompletedCrop(newCrop);
+  };
+
+  const handleWidthChange = (val: number) => {
+    if (!preview || !completedCrop || Number.isNaN(val) || val < 1) return;
+    const x = Math.round((completedCrop.x * preview.original_width) / 100);
+    const y = Math.round((completedCrop.y * preview.original_height) / 100);
+    let w = Math.min(val, preview.original_width - x);
+    let h = currentAspect ? Math.round(w / currentAspect) : Math.round((completedCrop.height * preview.original_height) / 100);
+    if (h > preview.original_height - y) {
+      h = preview.original_height - y;
+      if (currentAspect) {
+        w = Math.round(h * currentAspect);
+      }
+    }
+    h = Math.max(1, h);
+    w = Math.max(1, w);
+    applyPixelCrop({ x, y, width: w, height: h });
+  };
+
+  const handleHeightChange = (val: number) => {
+    if (!preview || !completedCrop || Number.isNaN(val) || val < 1) return;
+    const x = Math.round((completedCrop.x * preview.original_width) / 100);
+    const y = Math.round((completedCrop.y * preview.original_height) / 100);
+    let h = Math.min(val, preview.original_height - y);
+    let w = currentAspect ? Math.round(h * currentAspect) : Math.round((completedCrop.width * preview.original_width) / 100);
+    if (w > preview.original_width - x) {
+      w = preview.original_width - x;
+      if (currentAspect) {
+        h = Math.round(w / currentAspect);
+      }
+    }
+    w = Math.max(1, w);
+    h = Math.max(1, h);
+    applyPixelCrop({ x, y, width: w, height: h });
   };
 
   const handlePreviewRecrop = () => {
@@ -344,6 +420,46 @@ export function ImageEditor({ image, existingCrops, onSave, onDelete, onSkipImag
           </div>
 
           <div className="panel-group">
+            <div className="panel-group-title">输出模式</div>
+            <div className="ratio-grid">
+              <button
+                type="button"
+                className={`ratio-btn${outputMode === 'crop' ? ' active' : ''}`}
+                onClick={() => setOutputMode('crop')}
+                disabled={saving}
+              >
+                硬裁剪
+              </button>
+              <button
+                type="button"
+                className={`ratio-btn${outputMode === 'mask' ? ' active' : ''}`}
+                onClick={() => setOutputMode('mask')}
+                disabled={saving}
+              >
+                遮罩保留
+              </button>
+            </div>
+          </div>
+
+          <div className="panel-group">
+            <div className="panel-group-title">星级</div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {[1, 2, 3].map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className="btn btn-icon btn-sm"
+                  onClick={() => setRating(rating === s ? 0 : s as 1 | 2 | 3)}
+                  style={{ color: s <= rating ? 'var(--accent)' : 'var(--muted)' }}
+                  title={`${s}星`}
+                >
+                  ★
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel-group">
             <div className="panel-group-title">辅助线</div>
             <select
               className="select"
@@ -366,8 +482,25 @@ export function ImageEditor({ image, existingCrops, onSave, onDelete, onSkipImag
                 <>
                   x: {Math.round((completedCrop.x * preview.original_width) / 100)}<br />
                   y: {Math.round((completedCrop.y * preview.original_height) / 100)}<br />
-                  w: {Math.round((completedCrop.width * preview.original_width) / 100)}<br />
-                  h: {Math.round((completedCrop.height * preview.original_height) / 100)}
+                  w:{" "}
+                  <input
+                    type="number"
+                    min={1}
+                    max={preview.original_width}
+                    value={Math.round((completedCrop.width * preview.original_width) / 100)}
+                    onChange={(e) => handleWidthChange(Number(e.target.value))}
+                    style={{ width: 60, fontSize: 12, fontFamily: 'monospace' }}
+                  />
+                  <br />
+                  h:{" "}
+                  <input
+                    type="number"
+                    min={1}
+                    max={preview.original_height}
+                    value={Math.round((completedCrop.height * preview.original_height) / 100)}
+                    onChange={(e) => handleHeightChange(Number(e.target.value))}
+                    style={{ width: 60, fontSize: 12, fontFamily: 'monospace' }}
+                  />
                 </>
               ) : (
                 '未选择'
@@ -397,15 +530,28 @@ export function ImageEditor({ image, existingCrops, onSave, onDelete, onSkipImag
                 </button>
               </>
             ) : (
-              <button
-                className="btn btn-success"
-                onClick={handleSave}
-                disabled={saving || !completedCrop}
-                style={{ width: '100%', marginBottom: 8 }}
-              >
-                <Save size={14} />
-                {saving ? '保存中...' : '保存裁剪'}
-              </button>
+              <>
+                <button
+                  className="btn btn-success"
+                  onClick={handleSave}
+                  disabled={saving || !completedCrop}
+                  style={{ width: '100%', marginBottom: 8 }}
+                >
+                  <Save size={14} />
+                  {saving ? '保存中...' : '保存裁剪'}
+                </button>
+                {onSaveAndContinue && (
+                  <button
+                    className="btn btn-accent"
+                    onClick={handleSaveAndContinue}
+                    disabled={saving || !completedCrop}
+                    style={{ width: '100%', marginBottom: 8 }}
+                  >
+                    <Save size={14} />
+                    保存并继续裁剪
+                  </button>
+                )}
+              </>
             )}
 
             {!isRecropActive && (
@@ -437,7 +583,12 @@ export function ImageEditor({ image, existingCrops, onSave, onDelete, onSkipImag
             )}
             {existingCrops.map((c, i) => (
               <div key={i} style={{ fontSize: 11, color: 'var(--muted)', padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
-                <div style={{ color: 'var(--text)' }}>{c.crop_name}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ color: 'var(--text)' }}>{c.crop_name}</span>
+                  {(c.rating || 0) > 0 && (
+                    <span style={{ color: 'var(--accent)' }}>{'★'.repeat(c.rating || 0)}</span>
+                  )}
+                </div>
                 <div>{c.width}×{c.height} ({c.ratio_mode})</div>
                 <div style={{ color: 'var(--muted-2)', fontSize: 10 }}>{c.output_filename}</div>
               </div>

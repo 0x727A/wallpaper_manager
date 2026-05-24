@@ -26,6 +26,8 @@ export interface CropRecord {
   output_filename: string;
   ratio_mode: string;
   created_at: string;
+  output_mode?: string;
+  rating?: number;
 }
 
 export interface SaveCropRequest {
@@ -36,6 +38,8 @@ export interface SaveCropRequest {
   width: number;
   height: number;
   ratio_mode: string;
+  output_mode?: string;
+  rating?: number;
 }
 
 export interface BatchFailure {
@@ -112,8 +116,11 @@ export const deleteOriginalImage = (sourcePath: string): Promise<void> =>
 export const deleteCropRecord = (outputPath: string): Promise<CropRecord> =>
   invoke('delete_crop_record', { outputPath });
 
-export const readCroppedImageAsDataUrl = (outputPath: string): Promise<string> =>
-  invoke('read_cropped_image_as_data_url', { outputPath });
+export const resolveCroppedImagePath = (outputPath: string): Promise<string> =>
+  invoke('resolve_cropped_image_path', { outputPath });
+
+export const ensureCroppedThumbnail = (outputPath: string): Promise<string> =>
+  invoke('ensure_cropped_thumbnail', { outputPath });
 
 export const resolveOriginalForRecord = (record: CropRecord): Promise<ImageEntry> =>
   invoke('resolve_original_for_record', { record });

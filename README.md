@@ -9,7 +9,10 @@
 - **macOS**：下载 `.dmg` 安装包，拖拽到 Applications
 - **Windows**：下载 `.msi` 安装包，双击安装
 
-> **macOS 首次打开时若提示「无法验证开发者」**，请前往「系统设置 → 隐私与安全性」点击「仍要打开」，或按住 Control 键右键点击应用图标选择「打开」。
+> **macOS 首次打开时若提示「无法验证开发者」或「已损坏」**，请按住 Control 键右键点击应用图标选择「打开」。如果仍不行，在终端执行：
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/Wallhaven\ 图片裁剪记录器.app
+> ```
 
 ## 功能
 

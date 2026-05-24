@@ -204,7 +204,27 @@ export default function App() {
     setSelectedIndex(index);
   }, []);
 
-  const handleSaveCrop = useCallback((record: CropRecord) => {
+  const advanceAfterCompletedCrop = useCallback((record: CropRecord) => {
+    if (statusFilter === 'all' || statusFilter === 'cropped') {
+      setImages((prev) => {
+        setSelectedIndex((i) => Math.min(Math.max(0, prev.length - 1), i + 1));
+        return prev;
+      });
+    } else {
+      setImages((prev) => {
+        const idx = prev.findIndex((img) => img.source_path === record.source_path || img.relative_path === record.relative_path);
+        const next = prev.filter((img) => img.source_path !== record.source_path && img.relative_path !== record.relative_path);
+        setSelectedIndex(() => {
+          if (next.length === 0) return -1;
+          if (idx < 0) return Math.min(selectedIndex, next.length - 1);
+          return Math.min(idx, next.length - 1);
+        });
+        return next;
+      });
+    }
+  }, [selectedIndex, statusFilter, images.length]);
+
+  const addCropRecord = useCallback((record: CropRecord) => {
     setCropRecords((prev) => {
       const next = { ...prev };
       next[record.source_path] = [...(next[record.source_path] || []), record];
@@ -219,22 +239,16 @@ export default function App() {
       }
       return next;
     });
+  }, []);
 
-    if (statusFilter === 'all' || statusFilter === 'cropped') {
-      setSelectedIndex((i) => Math.min(images.length - 1, i + 1));
-    } else {
-      setImages((prev) => {
-        const idx = prev.findIndex((img) => img.source_path === record.source_path || img.relative_path === record.relative_path);
-        const next = prev.filter((img) => img.source_path !== record.source_path && img.relative_path !== record.relative_path);
-        setSelectedIndex(() => {
-          if (next.length === 0) return -1;
-          if (idx < 0) return Math.min(selectedIndex, next.length - 1);
-          return Math.min(idx, next.length - 1);
-        });
-        return next;
-      });
-    }
-  }, [selectedIndex, statusFilter, images.length]);
+  const handleSaveCrop = useCallback((record: CropRecord) => {
+    addCropRecord(record);
+    advanceAfterCompletedCrop(record);
+  }, [addCropRecord, advanceAfterCompletedCrop]);
+
+  const handleSaveAndContinueCrop = useCallback((record: CropRecord) => {
+    addCropRecord(record);
+  }, [addCropRecord]);
 
   const handleDeleteImage = useCallback((sourcePath: string) => {
     setAllImages((prev) => prev.filter((i) => i.source_path !== sourcePath));
@@ -332,14 +346,14 @@ export default function App() {
         );
         return groupBySourcePath(nextFlat);
       });
+      advanceAfterCompletedCrop(newRecord);
       setRecropTarget(null);
       setRecropCompare(null);
       setPreRecropSelection(null);
-      alert('已更新裁剪记录');
     } catch (e: any) {
       alert('保存失败: ' + (e?.message || String(e)));
     }
-  }, [recropCompare]);
+  }, [recropCompare, advanceAfterCompletedCrop]);
 
   const handleSkipImage = useCallback(async () => {
     if (!selectedImage) return;
@@ -447,6 +461,7 @@ export default function App() {
               image={selectedImage}
               existingCrops={cropRecords[selectedImage.source_path] || []}
               onSave={handleSaveCrop}
+              onSaveAndContinue={handleSaveAndContinueCrop}
               onDelete={handleDeleteImage}
               onSkipImage={handleSkipImage}
               onPrev={() => setSelectedIndex((i) => Math.max(0, i - 1))}

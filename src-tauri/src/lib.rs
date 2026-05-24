@@ -42,6 +42,14 @@ pub struct CropRecord {
     pub output_filename: String,
     pub ratio_mode: String,
     pub created_at: String,
+    #[serde(default = "default_output_mode")]
+    pub output_mode: String,
+    #[serde(default)]
+    pub rating: u8,
+}
+
+fn default_output_mode() -> String {
+    "crop".to_string()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -61,6 +69,10 @@ pub struct SaveCropRequest {
     pub width: u32,
     pub height: u32,
     pub ratio_mode: String,
+    #[serde(default = "default_output_mode")]
+    pub output_mode: String,
+    #[serde(default)]
+    pub rating: u8,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -449,6 +461,7 @@ fn create_crop_file(
     width: u32,
     height: u32,
     ratio_mode: &str,
+    output_mode: &str,
 ) -> Result<CropRecord, String> {
     let root = canonical_source_dir(source_dir)?;
     let rel = source_path
@@ -491,10 +504,20 @@ fn create_crop_file(
     );
     let out_path = out_dir.join(&out_filename);
 
-    let cropped = img.crop_imm(x, y, width, height);
-    cropped
-        .save(&out_path)
-        .map_err(|e| format!("保存裁剪图失败: {}", e))?;
+    if output_mode == "mask" {
+        let mut rgba = img.to_rgba8();
+        for (px, py, pixel) in rgba.enumerate_pixels_mut() {
+            if px < x || px >= x + width || py < y || py >= y + height {
+                *pixel = image::Rgba([0, 0, 0, 255]);
+            }
+        }
+        rgba.save(&out_path).map_err(|e| format!("保存遮罩图失败: {}", e))?;
+    } else {
+        let cropped = img.crop_imm(x, y, width, height);
+        cropped
+            .save(&out_path)
+            .map_err(|e| format!("保存裁剪图失败: {}", e))?;
+    }
 
     let out_path_str = path_string(&out_path);
     let rel_str = relative_path_for_record(rel);
@@ -513,67 +536,74 @@ fn create_crop_file(
         output_filename: out_filename,
         ratio_mode: ratio_mode.to_string(),
         created_at: Local::now().to_rfc3339(),
+        output_mode: output_mode.to_string(),
+        rating: 0,
     })
 }
 
 // ── Commands ──
 
 #[tauri::command]
-fn scan_images(
-    state: tauri::State<AppState>,
+async fn scan_images(
+    state: tauri::State<'_, AppState>,
     include_nsfw: bool,
 ) -> Result<Vec<ImageEntry>, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|e| format!("锁错误: {}", e))?;
-    let source_dir = settings.source_dir.clone();
-    drop(settings);
+    let source_dir = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        settings.source_dir.clone()
+    };
 
     let root = canonical_source_dir(&source_dir)?;
-    let mut entries = Vec::new();
 
-    for result in WalkDir::new(&root).into_iter().filter_entry(|e| {
-        let name = e.file_name().to_string_lossy();
-        if e.file_type().is_dir() {
-            !is_hidden_or_excluded_dir(&name)
-        } else {
-            true
-        }
-    }) {
-        let entry = match result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        if !is_image_file(path) {
-            continue;
-        }
-        let is_nsfw = detect_nsfw(path, &root);
-        if !include_nsfw && is_nsfw {
-            continue;
-        }
-        let relative_path =
-            relative_path_for_record(path.strip_prefix(&root).map_err(|_| "相对路径计算失败")?);
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut entries = Vec::new();
+        for result in WalkDir::new(&root).into_iter().filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            if e.file_type().is_dir() {
+                !is_hidden_or_excluded_dir(&name)
+            } else {
+                true
+            }
+        }) {
+            let entry = match result {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if !is_image_file(path) {
+                continue;
+            }
+            let is_nsfw = detect_nsfw(path, &root);
+            if !include_nsfw && is_nsfw {
+                continue;
+            }
+            let relative_path =
+                relative_path_for_record(path.strip_prefix(&root).map_err(|_| "相对路径计算失败")?);
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
 
-        entries.push(ImageEntry {
-            source_path: path_string(path),
-            relative_path,
-            filename,
-            is_nsfw,
-        });
-    }
+            entries.push(ImageEntry {
+                source_path: path_string(path),
+                relative_path,
+                filename,
+                is_nsfw,
+            });
+        }
 
-    entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-    Ok(entries)
+        entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        Ok(entries)
+    })
+    .await
+    .map_err(|e| format!("扫描目录任务失败: {}", e))?
 }
 
 #[tauri::command]
@@ -841,7 +871,7 @@ fn save_crop(
     drop(settings);
 
     let canon = validate_source_path(&source_dir, &request.source_path)?;
-    let record = create_crop_file(
+    let mut record = create_crop_file(
         &canon,
         &source_dir,
         &output_dir,
@@ -851,7 +881,9 @@ fn save_crop(
         request.width,
         request.height,
         &request.ratio_mode,
+        &request.output_mode,
     )?;
+    record.rating = request.rating.min(3);
 
     let mut records = read_crops(&source_dir)?;
     records.push(record.clone());
@@ -930,7 +962,8 @@ fn read_crop_records(state: tauri::State<AppState>) -> Result<Vec<CropRecord>, S
 }
 
 #[tauri::command]
-fn read_cropped_image_as_data_url(
+fn resolve_cropped_image_path(
+    handle: AppHandle,
     state: tauri::State<AppState>,
     output_path: String,
 ) -> Result<String, String> {
@@ -955,20 +988,70 @@ fn read_cropped_image_as_data_url(
         return Err("不是支持的图片文件".into());
     }
 
-    let bytes = fs::read(&path).map_err(|e| format!("读取裁剪图失败: {}", e))?;
-    let mime = if path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .eq_ignore_ascii_case("png")
-    {
-        "image/png"
-    } else {
-        "image/jpeg"
+    handle
+        .asset_protocol_scope()
+        .allow_file(&path)
+        .map_err(|e| format!("放行文件失败: {}", e))?;
+    Ok(path_string(&path))
+}
+
+#[tauri::command]
+async fn ensure_cropped_thumbnail(
+    handle: AppHandle,
+    state: tauri::State<'_, AppState>,
+    output_path: String,
+) -> Result<String, String> {
+    let output_root = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        if settings.output_dir.is_empty() {
+            return Err("输出目录未设置".into());
+        }
+        fs::canonicalize(&settings.output_dir).map_err(|e| format!("输出目录无效: {}", e))?
     };
 
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Ok(format!("data:{};base64,{}", mime, b64))
+    let path = fs::canonicalize(&output_path).map_err(|e| format!("裁剪图不存在: {}", e))?;
+    if !path.starts_with(&output_root) {
+        return Err("裁剪图不在输出目录内".into());
+    }
+    if !is_image_file(&path) {
+        return Err("不是支持的图片文件".into());
+    }
+
+    let cache_dir = handle
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("无法获取缓存目录: {}", e))?;
+    let rel = path.strip_prefix(&output_root).map_err(|_| "无法计算相对路径")?;
+    let thumb_dir = cache_dir.join("crop_thumbs").join(rel.parent().unwrap_or(Path::new("")));
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("thumb.jpg");
+    let thumb_path = thumb_dir.join(filename);
+
+    if thumb_path.exists() {
+        return Ok(path_string(&thumb_path));
+    }
+
+    let path_clone = path.clone();
+    let thumb_dir_clone = thumb_dir.clone();
+    let thumb_path_clone = thumb_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::create_dir_all(&thumb_dir_clone).map_err(|e| format!("创建缩略图目录失败: {}", e))?;
+        let img = image::open(&path_clone).map_err(|e| format!("打开图片失败: {}", e))?;
+        let thumb = img.thumbnail(360, 360);
+        thumb
+            .save(&thumb_path_clone)
+            .map_err(|e| format!("保存缩略图失败: {}", e))?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("生成缩略图任务失败: {}", e))??;
+
+    Ok(path_string(&thumb_path))
 }
 
 #[tauri::command]
@@ -991,16 +1074,8 @@ fn run_batch_from_json(
 
     let output_dir = path_string(&validate_output_dir(&output_dir, &source_dir)?);
     let text = fs::read_to_string(&json_path).map_err(|e| format!("读取 JSON 失败: {}", e))?;
-    let mut records: Vec<CropRecord> =
+    let records: Vec<CropRecord> =
         serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
-
-    // 去重：同一张原图只保留最后一条记录（按 relative_path 更稳）
-    let mut deduped: Vec<CropRecord> = Vec::new();
-    for record in records {
-        deduped.retain(|r| r.relative_path != record.relative_path);
-        deduped.push(record);
-    }
-    records = deduped;
 
     let mut existing_records = read_crops(&source_dir)?;
     let mut success = 0usize;
@@ -1037,8 +1112,10 @@ fn run_batch_from_json(
             record.width,
             record.height,
             &record.ratio_mode,
+            &record.output_mode,
         ) {
-            Ok(new_record) => {
+            Ok(mut new_record) => {
+                new_record.rating = record.rating.min(3);
                 success += 1;
                 successful_relative_paths.push(new_record.relative_path.clone());
                 existing_records.push(new_record);
@@ -1204,10 +1281,20 @@ fn preview_crop(
         return Err("裁剪区域为空".into());
     }
 
-    let cropped = img.crop_imm(x, y, width, height);
+    let (preview_w, preview_h, rgb) = if request.output_mode == "mask" {
+        let mut rgba = img.to_rgba8();
+        for (px, py, pixel) in rgba.enumerate_pixels_mut() {
+            if px < x || px >= x + width || py < y || py >= y + height {
+                *pixel = image::Rgba([0, 0, 0, 255]);
+            }
+        }
+        (img_w, img_h, image::DynamicImage::ImageRgba8(rgba).to_rgb8())
+    } else {
+        let cropped = img.crop_imm(x, y, width, height);
+        (width, height, cropped.to_rgb8())
+    };
 
     let mut buffer: Vec<u8> = Vec::new();
-    let rgb = cropped.to_rgb8();
     let mut cursor = std::io::Cursor::new(&mut buffer);
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 90);
     encoder
@@ -1224,8 +1311,8 @@ fn preview_crop(
 
     Ok(CropPreview {
         data_url,
-        width,
-        height,
+        width: preview_w,
+        height: preview_h,
     })
 }
 
@@ -1249,7 +1336,7 @@ fn save_recrop(
         .ok_or_else(|| "未找到旧裁剪记录".to_string())?;
 
     let canon = validate_source_path(&source_dir, &request.crop.source_path)?;
-    let record = create_crop_file(
+    let mut record = create_crop_file(
         &canon,
         &source_dir,
         &output_dir,
@@ -1259,7 +1346,9 @@ fn save_recrop(
         request.crop.width,
         request.crop.height,
         &request.crop.ratio_mode,
+        &request.crop.output_mode,
     )?;
+    record.rating = request.crop.rating.min(3);
 
     records[idx] = record.clone();
 
@@ -1485,6 +1574,13 @@ pub fn run() {
                 .allow_directory(&thumb_dir, true)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
+            let crop_thumb_dir = cache_dir.join("crop_thumbs");
+            fs::create_dir_all(&crop_thumb_dir)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            app.asset_protocol_scope()
+                .allow_directory(&crop_thumb_dir, true)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
             #[cfg(target_os = "macos")]
             {
                 use tauri::menu::{Menu, PredefinedMenuItem, Submenu};
@@ -1553,7 +1649,8 @@ pub fn run() {
             read_crop_records,
             run_batch_from_json,
             delete_original_image,
-            read_cropped_image_as_data_url,
+            resolve_cropped_image_path,
+            ensure_cropped_thumbnail,
             resolve_original_for_record,
             preview_crop,
             save_recrop,
