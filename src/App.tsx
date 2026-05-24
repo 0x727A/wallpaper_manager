@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { ImageOff } from 'lucide-react';
 import { SettingsBar } from './components/SettingsBar';
 import { ImageGrid, StatusFilter } from './components/ImageGrid';
@@ -501,7 +501,7 @@ export default function App() {
       </div>
       {croppedGalleryOpen && (
         <CroppedGallery
-          records={Object.values(cropRecords).flat()}
+          records={useMemo(() => Object.values(cropRecords).flat(), [cropRecords])}
           onClose={() => setCroppedGalleryOpen(false)}
           onRecrop={startRecrop}
           onDeleteCropRecord={handleDeleteCropRecord}
