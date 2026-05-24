@@ -770,6 +770,32 @@ async fn pick_json_file(handle: AppHandle) -> Result<Option<String>, String> {
     Ok(file.and_then(|p| p.into_path().ok().map(|p| path_string(&p))))
 }
 
+fn source_dir_hash(source_dir: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    source_dir.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn is_thumb_stale(source_path: &Path, thumb_path: &Path) -> bool {
+    let source_meta = match fs::metadata(source_path) {
+        Ok(m) => m,
+        Err(_) => return true,
+    };
+    let thumb_meta = match fs::metadata(thumb_path) {
+        Ok(m) => m,
+        Err(_) => return true,
+    };
+    let source_mtime = source_meta.modified().ok();
+    let thumb_mtime = thumb_meta.modified().ok();
+    match (source_mtime, thumb_mtime) {
+        (Some(sm), Some(tm)) if sm > tm => return true,
+        _ => {}
+    }
+    source_meta.len() != thumb_meta.len()
+}
+
 #[tauri::command]
 async fn ensure_thumbnail(
     handle: AppHandle,
@@ -792,8 +818,12 @@ async fn ensure_thumbnail(
         .path()
         .app_cache_dir()
         .map_err(|e| format!("无法获取缓存目录: {}", e))?;
+    let source_hash = source_dir_hash(&source_dir);
     let thumb_dir = cache_dir
         .join("thumbs")
+        .join(&source_hash[..2])
+        .join(&source_hash[2..4])
+        .join(&source_hash)
         .join(rel.parent().unwrap_or(Path::new("")));
 
     let filename = canon
@@ -802,12 +832,14 @@ async fn ensure_thumbnail(
         .unwrap_or("thumb.jpg");
     let thumb_path = thumb_dir.join(&filename);
 
-    // Fast path: cache exists, return immediately
-    if thumb_path.exists() {
+    if thumb_path.exists() && !is_thumb_stale(&canon, &thumb_path) {
         return Ok(path_string(&thumb_path));
     }
 
-    // Generate thumbnail in blocking thread
+    if thumb_path.exists() {
+        let _ = fs::remove_file(&thumb_path);
+    }
+
     let canon_clone = canon.clone();
     let thumb_dir_clone = thumb_dir.clone();
     let thumb_path_clone = thumb_path.clone();
