@@ -44,3 +44,8 @@
 | `crops.json` | 所有裁剪记录，可导入导出 |
 | `skipped.json` | 被标记跳过的图片记录 |
 | `_deleted/` | 被删除原图的回收目录 |
+
+## 致谢
+
+- [OpenAI Codex](https://openai.com/codex)
+- [Kimi](https://kimi.moonshot.cn)
