@@ -827,50 +827,56 @@ async fn ensure_thumbnail(
 }
 
 #[tauri::command]
-fn read_preview_image(
+async fn read_preview_image(
     state: tauri::State<'_, AppState>,
     source_path: String,
 ) -> Result<PreviewImage, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|e| format!("锁错误: {}", e))?;
-    let source_dir = settings.source_dir.clone();
-    drop(settings);
-
-    let canon = validate_source_path(&source_dir, &source_path)?;
-    let img = image::open(&canon).map_err(|e| format!("打开图片失败: {}", e))?;
-    let (orig_w, orig_h) = (img.width(), img.height());
-
-    let preview = if orig_w.max(orig_h) > 1800 {
-        img.thumbnail(1800, 1800)
-    } else {
-        img
+    let source_dir = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        settings.source_dir.clone()
     };
 
-    let rgb = preview.to_rgb8();
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut cursor = std::io::Cursor::new(&mut buffer);
-    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 90);
-    encoder
-        .write_image(
-            rgb.as_raw(),
-            rgb.width(),
-            rgb.height(),
-            image::ExtendedColorType::Rgb8,
-        )
-        .map_err(|e| format!("编码预览图失败: {}", e))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let canon = validate_source_path(&source_dir, &source_path)?;
+        let img = image::open(&canon).map_err(|e| format!("打开图片失败: {}", e))?;
+        let (orig_w, orig_h) = (img.width(), img.height());
 
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&buffer);
-    let data_url = format!("data:image/jpeg;base64,{}", b64);
+        let preview = if orig_w.max(orig_h) > 1800 {
+            img.thumbnail(1800, 1800)
+        } else {
+            img
+        };
 
-    Ok(PreviewImage {
-        data_url,
-        original_width: orig_w,
-        original_height: orig_h,
-        preview_width: preview.width(),
-        preview_height: preview.height(),
+        let rgb = preview.to_rgb8();
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buffer);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 90);
+        encoder
+            .write_image(
+                rgb.as_raw(),
+                rgb.width(),
+                rgb.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+            .map_err(|e| format!("编码预览图失败: {}", e))?;
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&buffer);
+        let data_url = format!("data:image/jpeg;base64,{}", b64);
+
+        Ok(PreviewImage {
+            data_url,
+            original_width: orig_w,
+            original_height: orig_h,
+            preview_width: preview.width(),
+            preview_height: preview.height(),
+        })
     })
+    .await
+    .map_err(|e| format!("读取预览图任务失败: {}", e))
+    .and_then(|r| r)
 }
 
 fn save_crop_blocking(
@@ -1462,63 +1468,69 @@ fn resolve_original_for_record(
 }
 
 #[tauri::command]
-fn preview_crop(
+async fn preview_crop(
     state: tauri::State<'_, AppState>,
     request: SaveCropRequest,
 ) -> Result<CropPreview, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|e| format!("锁错误: {}", e))?;
-    let source_dir = settings.source_dir.clone();
-    drop(settings);
-
-    let canon = validate_source_path(&source_dir, &request.source_path)?;
-    let img = image::open(&canon).map_err(|e| format!("打开图片失败: {}", e))?;
-    let (img_w, img_h) = (img.width(), img.height());
-
-    let x = request.x.min(img_w.saturating_sub(1));
-    let y = request.y.min(img_h.saturating_sub(1));
-    let width = request.width.min(img_w - x);
-    let height = request.height.min(img_h - y);
-
-    if width == 0 || height == 0 {
-        return Err("裁剪区域为空".into());
-    }
-
-    let (preview_w, preview_h, rgb) = if request.output_mode == "mask" {
-        let mut rgba = img.to_rgba8();
-        for (px, py, pixel) in rgba.enumerate_pixels_mut() {
-            if px < x || px >= x + width || py < y || py >= y + height {
-                *pixel = image::Rgba([0, 0, 0, 255]);
-            }
-        }
-        (img_w, img_h, image::DynamicImage::ImageRgba8(rgba).to_rgb8())
-    } else {
-        let cropped = img.crop_imm(x, y, width, height);
-        (width, height, cropped.to_rgb8())
+    let source_dir = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        settings.source_dir.clone()
     };
 
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut cursor = std::io::Cursor::new(&mut buffer);
-    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 90);
-    encoder
-        .write_image(
-            rgb.as_raw(),
-            rgb.width(),
-            rgb.height(),
-            image::ExtendedColorType::Rgb8,
-        )
-        .map_err(|e| format!("编码预览图失败: {}", e))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let canon = validate_source_path(&source_dir, &request.source_path)?;
+        let img = image::open(&canon).map_err(|e| format!("打开图片失败: {}", e))?;
+        let (img_w, img_h) = (img.width(), img.height());
 
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&buffer);
-    let data_url = format!("data:image/jpeg;base64,{}", b64);
+        let x = request.x.min(img_w.saturating_sub(1));
+        let y = request.y.min(img_h.saturating_sub(1));
+        let width = request.width.min(img_w - x);
+        let height = request.height.min(img_h - y);
 
-    Ok(CropPreview {
-        data_url,
-        width: preview_w,
-        height: preview_h,
+        if width == 0 || height == 0 {
+            return Err("裁剪区域为空".into());
+        }
+
+        let (preview_w, preview_h, rgb) = if request.output_mode == "mask" {
+            let mut rgba = img.to_rgba8();
+            for (px, py, pixel) in rgba.enumerate_pixels_mut() {
+                if px < x || px >= x + width || py < y || py >= y + height {
+                    *pixel = image::Rgba([0, 0, 0, 255]);
+                }
+            }
+            (img_w, img_h, image::DynamicImage::ImageRgba8(rgba).to_rgb8())
+        } else {
+            let cropped = img.crop_imm(x, y, width, height);
+            (width, height, cropped.to_rgb8())
+        };
+
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buffer);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 90);
+        encoder
+            .write_image(
+                rgb.as_raw(),
+                rgb.width(),
+                rgb.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+            .map_err(|e| format!("编码预览图失败: {}", e))?;
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&buffer);
+        let data_url = format!("data:image/jpeg;base64,{}", b64);
+
+        Ok(CropPreview {
+            data_url,
+            width: preview_w,
+            height: preview_h,
+        })
     })
+    .await
+    .map_err(|e| format!("预览裁剪任务失败: {}", e))
+    .and_then(|r| r)
 }
 
 fn save_recrop_blocking(
