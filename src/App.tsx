@@ -89,6 +89,7 @@ export default function App() {
   const [preRecropSelection, setPreRecropSelection] = useState<{
     image: ImageEntry | null;
     index: number;
+    insertedForRecrop: boolean;
   } | null>(null);
   const RATIO_MODES = ['free', '16:9', '16:10', '4:3', '1:1', '3:2', '2:3', '21:9'];
   const [lastRatioMode, setLastRatioMode] = useState(() => {
@@ -109,7 +110,7 @@ export default function App() {
     if (!settings.source_dir) return;
     performScan(settings);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [includeNsfw]);
+  }, [settings.source_dir, settings.output_dir, includeNsfw]);
 
   const loadCropRecords = useCallback(async () => {
     const records = await readCropRecords();
@@ -198,9 +199,8 @@ export default function App() {
       setSelectedIndex(-1);
       setCropRecords({});
       setSkipRecords({});
-      setTimeout(() => performScan(s), 0);
     }
-  }, [settings.source_dir, performScan]);
+  }, [settings.source_dir]);
 
   const handleSelect = useCallback((index: number) => {
     setSelectedIndex(index);
@@ -300,8 +300,13 @@ export default function App() {
 
   const startRecrop = useCallback(async (record: CropRecord) => {
     try {
-      setPreRecropSelection({ image: selectedImage, index: selectedIndex });
       const entry = await resolveOriginalForRecord(record);
+      const existsInImages = images.some((i) => i.relative_path === entry.relative_path);
+      setPreRecropSelection({
+        image: selectedImage,
+        index: selectedIndex,
+        insertedForRecrop: !existsInImages,
+      });
       setAllImages((prev) => {
         const exists = prev.some((i) => i.relative_path === entry.relative_path);
         return exists ? prev : [...prev, entry];
@@ -318,7 +323,7 @@ export default function App() {
     } catch (e: any) {
       alert(String(e?.message || e));
     }
-  }, [selectedImage, selectedIndex]);
+  }, [selectedImage, selectedIndex, images]);
 
   const handlePreviewRecrop = useCallback(async (request: SaveCropRequest) => {
     if (!recropTarget) return;
@@ -334,6 +339,37 @@ export default function App() {
     }
   }, [recropTarget]);
 
+  const advanceAfterCompletedRecrop = useCallback((record: CropRecord) => {
+    if (!preRecropSelection) return;
+
+    if (preRecropSelection.insertedForRecrop) {
+      // 临时插入的图，只从当前 images 移除，allImages 不动
+      setImages((prev) => {
+        const idx = prev.findIndex((i) => i.relative_path === record.relative_path);
+        const next = prev.filter((i) => i.relative_path !== record.relative_path);
+        if (next.length === 0) {
+          setSelectedIndex(-1);
+        } else {
+          setSelectedIndex(
+            idx >= 0
+              ? Math.min(idx, next.length - 1)
+              : Math.min(preRecropSelection.index, next.length - 1)
+          );
+        }
+        return next;
+      });
+    } else {
+      // 本来就在列表中，idx + 1；末尾就选上一张
+      setImages((prev) => {
+        const idx = prev.findIndex((i) => i.relative_path === record.relative_path);
+        const nextIdx =
+          idx >= 0 && idx + 1 < prev.length ? idx + 1 : Math.max(0, idx - 1);
+        setSelectedIndex(prev.length > 0 ? nextIdx : -1);
+        return prev;
+      });
+    }
+  }, [preRecropSelection]);
+
   const handleConfirmRecrop = useCallback(async () => {
     if (!recropCompare) return;
     try {
@@ -348,14 +384,14 @@ export default function App() {
         );
         return groupBySourcePath(nextFlat);
       });
-      advanceAfterCompletedCrop(newRecord);
+      advanceAfterCompletedRecrop(newRecord);
       setRecropTarget(null);
       setRecropCompare(null);
       setPreRecropSelection(null);
     } catch (e: any) {
       alert('保存失败: ' + (e?.message || String(e)));
     }
-  }, [recropCompare, advanceAfterCompletedCrop]);
+  }, [recropCompare, advanceAfterCompletedRecrop]);
 
   const handleSkipImage = useCallback(async () => {
     if (!selectedImage) return;

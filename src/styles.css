@@ -343,6 +343,12 @@ select {
   gap: 6px;
 }
 
+.output-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
 .ratio-btn {
   height: 30px;
   border-radius: 6px;
@@ -355,6 +361,7 @@ select {
   align-items: center;
   justify-content: center;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
 }
 
 .ratio-btn:hover {

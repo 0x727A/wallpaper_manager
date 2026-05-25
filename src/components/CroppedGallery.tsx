@@ -15,7 +15,7 @@ interface Props {
 
 export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord }: Props) {
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
-  const { thumbs, loadThumb } = useCroppedThumbQueue();
+  const { thumbs, loadThumb } = useCroppedThumbQueue(records);
 
   const sorted = useMemo((): SortedRecord[] => {
     return [...records]

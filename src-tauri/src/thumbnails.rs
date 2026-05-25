@@ -1,6 +1,6 @@
 use base64::Engine;
 use image::ImageEncoder;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -312,23 +312,9 @@ pub(crate) async fn ensure_cropped_thumbnails(
         let record_map: HashMap<String, &CropRecord> =
             records.iter().map(|r| (r.output_path.clone(), r)).collect();
 
-        // 预建 canonical 索引，避免每条 miss 都 O(n) canonicalize
-        let canon_index: HashSet<PathBuf> = records
-            .iter()
-            .filter_map(|r| fs::canonicalize(&r.output_path).ok())
-            .collect();
-
         let mut result = HashMap::new();
         for output_path in &output_paths {
-            let found = if record_map.contains_key(output_path) {
-                true
-            } else if let Ok(path) = fs::canonicalize(output_path) {
-                canon_index.contains(&path)
-            } else {
-                false
-            };
-
-            if !found {
+            if !record_map.contains_key(output_path) {
                 continue;
             }
             if !is_image_file(Path::new(output_path)) {

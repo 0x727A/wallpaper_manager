@@ -107,7 +107,7 @@ export function ImageEditorInspector({
 
       <div className="panel-group">
         <div className="panel-group-title">输出模式</div>
-        <div className="ratio-grid">
+        <div className="output-mode-grid">
           <button
             type="button"
             className={`ratio-btn${outputMode === 'crop' ? ' active' : ''}`}

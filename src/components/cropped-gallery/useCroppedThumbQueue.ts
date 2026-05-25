@@ -6,7 +6,7 @@ import { CropRecord } from '../../api';
 const BATCH_SIZE = 12;
 const CONCURRENCY = 4;
 
-export function useCroppedThumbQueue() {
+export function useCroppedThumbQueue(records?: CropRecord[]) {
   const [thumbs, setThumbs] = useState<Record<string, ThumbEntry>>({});
 
   const loadingRef = useRef<Set<string>>(new Set());
@@ -72,11 +72,13 @@ export function useCroppedThumbQueue() {
           }
         })
         .finally(() => {
-          if (generationRef.current !== gen) return;
           for (const key of keys) {
             loadingRef.current.delete(key);
           }
           runningRef.current = Math.max(0, runningRef.current - 1);
+
+          if (generationRef.current !== gen || disposedRef.current) return;
+
           flushThumbs();
           scheduleLoad();
         });
@@ -93,7 +95,6 @@ export function useCroppedThumbQueue() {
   }, [scheduleLoad]);
 
   useEffect(() => {
-    generationRef.current++;
     disposedRef.current = false;
     return () => {
       generationRef.current++;
@@ -111,6 +112,38 @@ export function useCroppedThumbQueue() {
       pendingThumbsRef.current = {};
     };
   }, []);
+
+  useEffect(() => {
+    generationRef.current++;
+    const validKeys = new Set(records?.map((r) => r.output_path) ?? []);
+
+    for (const key of Array.from(loadedRef.current)) {
+      if (!validKeys.has(key)) loadedRef.current.delete(key);
+    }
+    for (const key of Array.from(queuedRef.current)) {
+      if (!validKeys.has(key)) queuedRef.current.delete(key);
+    }
+    for (const key of Array.from(loadingRef.current)) {
+      if (!validKeys.has(key)) loadingRef.current.delete(key);
+    }
+    queueRef.current = queueRef.current.filter((r) => validKeys.has(r.output_path));
+    for (const key of Object.keys(pendingThumbsRef.current)) {
+      if (!validKeys.has(key)) delete pendingThumbsRef.current[key];
+    }
+
+    setThumbs((prev) => {
+      const next: Record<string, ThumbEntry> = {};
+      let changed = false;
+      for (const key of Object.keys(prev)) {
+        if (validKeys.has(key)) {
+          next[key] = prev[key];
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [records]);
 
   return { thumbs, loadThumb };
 }
