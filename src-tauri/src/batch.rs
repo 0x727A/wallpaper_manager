@@ -36,6 +36,9 @@ fn run_batch_from_json_blocking(
     let text = fs::read_to_string(json_path).map_err(|e| format!("读取 JSON 失败: {}", e))?;
     let records: Vec<CropRecord> =
         serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
+    if records.len() > 10000 {
+        return Err("批量导入记录数超过 10000 条上限".into());
+    }
 
     let mut existing_records = read_crops(source_dir)?;
     let total = records.len();
@@ -184,6 +187,9 @@ pub(crate) async fn run_batch_from_json(
     };
 
     let json_meta = fs::metadata(&json_path).map_err(|e| format!("无法访问 JSON 文件: {}", e))?;
+    if json_meta.len() > 50 * 1024 * 1024 {
+        return Err("JSON 文件超过 50MB 上限".into());
+    }
     if !json_meta.is_file() || !json_path.to_lowercase().ends_with(".json") {
         return Err("请选择有效的 JSON 文件".into());
     }

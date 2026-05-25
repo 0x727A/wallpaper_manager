@@ -150,9 +150,9 @@ pub(crate) fn validate_wallhaven_root(dir: &Path) -> Result<(), String> {
         return Err("请选择有效的目录".into());
     }
 
-    // 禁止选择输出目录/Crops 目录
-    if is_crops_dir(dir) {
-        return Err("请选择原图库目录，不要选择裁剪输出目录".into());
+    // 拒绝根目录 / 盘符根目录
+    if dir.parent().is_none() {
+        return Err("不能选择文件系统根目录".into());
     }
 
     // 禁止选择排除目录
@@ -160,6 +160,11 @@ pub(crate) fn validate_wallhaven_root(dir: &Path) -> Result<(), String> {
         if name == "_deleted" || name == "_cropped" {
             return Err("不能选择排除目录".into());
         }
+    }
+
+    // 禁止选择输出目录/Crops 目录
+    if is_crops_dir(dir) {
+        return Err("请选择原图库目录，不要选择裁剪输出目录".into());
     }
 
     Ok(())
@@ -256,6 +261,19 @@ mod tests {
         let deleted = tmp.path().join("_deleted");
         fs::create_dir_all(&deleted).unwrap();
         assert!(validate_wallhaven_root(&deleted).is_err());
+    }
+
+    #[test]
+    fn test_filesystem_root_rejected() {
+        assert!(validate_wallhaven_root(Path::new("/")).is_err());
+    }
+
+    #[test]
+    fn test_temp_system_dir_accepted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let system = tmp.path().join("system");
+        fs::create_dir_all(&system).unwrap();
+        assert!(validate_wallhaven_root(&system).is_ok());
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::models::{
 };
 use crate::paths::{
     canonical_source_dir, is_image_file, path_string, relative_path_for_record, sanitize_filename,
-    validate_source_path,
+    suggested_output_dir, validate_source_path,
 };
 use crate::records::{read_crops, read_skipped, remove_skip_record, write_crops, write_skipped};
 use crate::thumbnails::generate_crop_thumbnail;
@@ -195,7 +195,7 @@ pub(crate) fn delete_crop_record(
     state: tauri::State<'_, AppState>,
     output_path: String,
 ) -> Result<CropRecord, String> {
-    let (source_dir, _output_dir) = {
+    let (source_dir, output_dir) = {
         let settings = state
             .settings
             .lock()
@@ -223,13 +223,21 @@ pub(crate) fn delete_crop_record(
         None => return Err("未找到对应裁剪记录".into()),
     };
 
-    // 2. 校验输出目录（仅用于日志/参考，不限制删除）
-    // 旧输出目录中的历史记录也允许删除；安全边界是必须先匹配 crops.json 记录。
+    // 2. 确定输出目录根
+    let output_root = if output_dir.is_empty() {
+        let source_root = canonical_source_dir(&source_dir)?;
+        suggested_output_dir(&source_root)?
+    } else {
+        fs::canonicalize(&output_dir).map_err(|e| format!("输出目录无效: {}", e))?
+    };
 
-    // 3. 删除文件（文件不存在也继续）
-    if let Some(ref p) = target_canon {
-        if p.exists() {
-            if let Err(e) = fs::remove_file(p) {
+    // 3. 若文件仍存在，验证其在输出目录内并删除
+    if let Some(ref target) = target_canon {
+        if !target.starts_with(&output_root) {
+            return Err("裁剪图不在输出目录内".into());
+        }
+        if target.exists() {
+            if let Err(e) = fs::remove_file(target) {
                 return Err(format!("删除裁剪图失败: {}", e));
             }
         }
@@ -247,15 +255,28 @@ pub(crate) fn resolve_cropped_image_path(
     state: tauri::State<'_, AppState>,
     output_path: String,
 ) -> Result<String, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|e| format!("锁错误: {}", e))?;
-    let source_dir = settings.source_dir.clone();
-    drop(settings);
+    let (source_dir, output_dir) = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        (settings.source_dir.clone(), settings.output_dir.clone())
+    };
 
     let records = read_crops(&source_dir)?;
     let path = fs::canonicalize(&output_path).map_err(|e| format!("裁剪图不存在: {}", e))?;
+
+    // 验证裁剪图位于输出目录内
+    let output_root = if output_dir.is_empty() {
+        let source_root = canonical_source_dir(&source_dir)?;
+        suggested_output_dir(&source_root)?
+    } else {
+        fs::canonicalize(&output_dir).map_err(|e| format!("输出目录无效: {}", e))?
+    };
+    if !path.starts_with(&output_root) {
+        return Err("裁剪图不在输出目录内".into());
+    }
+
     let found = records.iter().any(|r| {
         if r.output_path == output_path {
             return true;
