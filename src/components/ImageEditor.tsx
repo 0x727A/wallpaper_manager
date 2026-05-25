@@ -1,23 +1,19 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import ReactCrop, { PercentCrop, centerCrop, makeAspectCrop } from 'react-image-crop';
-import { ChevronLeft, ChevronRight, Save, Trash2, ZoomIn, ZoomOut, RotateCcw, Eye } from 'lucide-react';
-import { ImageEntry, CropRecord, SaveCropRequest, saveCrop, deleteOriginalImage, readPreviewImage, PreviewImage } from '../api';
-
-const MIN_ZOOM = 0.25;
-const MAX_ZOOM = 2.5;
-const BUTTON_ZOOM_STEP = 0.25;
-const WHEEL_ZOOM_FACTOR = 1.08;
-
-const RATIOS = [
-  { label: '自由', value: 'free', aspect: undefined as number | undefined },
-  { label: '16:9', value: '16:9', aspect: 16 / 9 },
-  { label: '16:10', value: '16:10', aspect: 16 / 10 },
-  { label: '4:3', value: '4:3', aspect: 4 / 3 },
-  { label: '1:1', value: '1:1', aspect: 1 },
-  { label: '3:2', value: '3:2', aspect: 3 / 2 },
-  { label: '2:3', value: '2:3', aspect: 2 / 3 },
-  { label: '21:9', value: '21:9', aspect: 21 / 9 },
-];
+import { PercentCrop, centerCrop, makeAspectCrop } from 'react-image-crop';
+import {
+  ImageEntry,
+  CropRecord,
+  SaveCropRequest,
+  saveCrop,
+  deleteOriginalImage,
+  readPreviewImage,
+  PreviewImage,
+} from '../api';
+import { ImageEditorToolbar } from './image-editor/ImageEditorToolbar';
+import { CropCanvas } from './image-editor/CropCanvas';
+import { ImageEditorInspector } from './image-editor/ImageEditorInspector';
+import { RATIOS, MIN_ZOOM, MAX_ZOOM, WHEEL_ZOOM_FACTOR } from './image-editor/constants';
+import { GuideMode, OutputMode, Rating } from './image-editor/types';
 
 interface Props {
   image: ImageEntry;
@@ -36,7 +32,22 @@ interface Props {
   onSkipImage?: () => void;
 }
 
-export function ImageEditor({ image, existingCrops, onSave, onSaveAndContinue, onDelete, onSkipImage, onPrev, onNext, settings, ratioMode, onRatioModeChange, recropTarget, onPreviewRecrop, onCancelRecrop }: Props) {
+export function ImageEditor({
+  image,
+  existingCrops,
+  onSave,
+  onSaveAndContinue,
+  onDelete,
+  onSkipImage,
+  onPrev,
+  onNext,
+  settings,
+  ratioMode,
+  onRatioModeChange,
+  recropTarget,
+  onPreviewRecrop,
+  onCancelRecrop,
+}: Props) {
   const [crop, setCrop] = useState<PercentCrop>();
   const [completedCrop, setCompletedCrop] = useState<PercentCrop>();
   const [cropName, setCropName] = useState('');
@@ -46,12 +57,11 @@ export function ImageEditor({ image, existingCrops, onSave, onSaveAndContinue, o
   const [zoom, setZoom] = useState(1);
   const [fitZoom, setFitZoom] = useState(1);
 
-  type GuideMode = 'none' | 'thirds' | 'diagonal' | 'cross' | 'thirds_diagonal' | 'thirds_cross';
   const [guideMode, setGuideMode] = useState<GuideMode>(() => {
     return (localStorage.getItem('cropGuideMode') as GuideMode) || 'thirds';
   });
-  const [outputMode, setOutputMode] = useState<'crop' | 'mask'>('crop');
-  const [rating, setRating] = useState<0 | 1 | 2 | 3>(0);
+  const [outputMode, setOutputMode] = useState<OutputMode>('crop');
+  const [rating, setRating] = useState<Rating>(0);
 
   useEffect(() => {
     localStorage.setItem('cropGuideMode', guideMode);
@@ -74,7 +84,9 @@ export function ImageEditor({ image, existingCrops, onSave, onSaveAndContinue, o
         console.error('readPreviewImage failed', err);
         if (!cancelled) setPreview(null);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [image.source_path]);
 
   useEffect(() => {
@@ -82,8 +94,8 @@ export function ImageEditor({ image, existingCrops, onSave, onSaveAndContinue, o
     const rt = recropTarget;
     onRatioModeChange(rt.ratio_mode);
     setCropName(rt.crop_name);
-    setOutputMode((rt.output_mode as 'crop' | 'mask') ?? 'crop');
-    setRating(Math.min(3, Math.max(0, rt.rating ?? 0)) as 0 | 1 | 2 | 3);
+    setOutputMode((rt.output_mode as OutputMode) ?? 'crop');
+    setRating(Math.min(3, Math.max(0, rt.rating ?? 0)) as Rating);
     const percentCrop: PercentCrop = {
       unit: '%',
       x: (rt.x / rt.original_width) * 100,
@@ -140,8 +152,7 @@ export function ImageEditor({ image, existingCrops, onSave, onSaveAndContinue, o
     setZoom(nextFitZoom);
   }, [preview]);
 
-  const clampZoom = (value: number) =>
-    Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
+  const clampZoom = (value: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 
   const handleWheelZoom = (e: React.WheelEvent<HTMLDivElement>) => {
     if (!preview || !editorViewportRef.current) return;
@@ -154,9 +165,14 @@ export function ImageEditor({ image, existingCrops, onSave, onSaveAndContinue, o
     const mouseY = e.clientY - rect.top;
 
     const oldZoom = zoom;
-    const factor = e.deltaY < 0
-      ? (e.shiftKey ? 1.2 : WHEEL_ZOOM_FACTOR)
-      : (e.shiftKey ? 1 / 1.2 : 1 / WHEEL_ZOOM_FACTOR);
+    const factor =
+      e.deltaY < 0
+        ? e.shiftKey
+          ? 1.2
+          : WHEEL_ZOOM_FACTOR
+        : e.shiftKey
+          ? 1 / 1.2
+          : 1 / WHEEL_ZOOM_FACTOR;
 
     const nextZoom = clampZoom(oldZoom * factor);
     if (nextZoom === oldZoom) return;
@@ -252,12 +268,16 @@ export function ImageEditor({ image, existingCrops, onSave, onSaveAndContinue, o
     setCompletedCrop(newCrop);
   };
 
+  const currentAspect = RATIOS.find((r) => r.value === ratioMode)?.aspect;
+
   const handleWidthChange = (val: number) => {
     if (!preview || !completedCrop || Number.isNaN(val) || val < 1) return;
     const x = Math.round((completedCrop.x * preview.original_width) / 100);
     const y = Math.round((completedCrop.y * preview.original_height) / 100);
     let w = Math.min(val, preview.original_width - x);
-    let h = currentAspect ? Math.round(w / currentAspect) : Math.round((completedCrop.height * preview.original_height) / 100);
+    let h = currentAspect
+      ? Math.round(w / currentAspect)
+      : Math.round((completedCrop.height * preview.original_height) / 100);
     if (h > preview.original_height - y) {
       h = preview.original_height - y;
       if (currentAspect) {
@@ -274,7 +294,9 @@ export function ImageEditor({ image, existingCrops, onSave, onSaveAndContinue, o
     const x = Math.round((completedCrop.x * preview.original_width) / 100);
     const y = Math.round((completedCrop.y * preview.original_height) / 100);
     let h = Math.min(val, preview.original_height - y);
-    let w = currentAspect ? Math.round(h * currentAspect) : Math.round((completedCrop.width * preview.original_width) / 100);
+    let w = currentAspect
+      ? Math.round(h * currentAspect)
+      : Math.round((completedCrop.width * preview.original_width) / 100);
     if (w > preview.original_width - x) {
       w = preview.original_width - x;
       if (currentAspect) {
@@ -302,300 +324,61 @@ export function ImageEditor({ image, existingCrops, onSave, onSaveAndContinue, o
     }
   };
 
-  const currentAspect = RATIOS.find((r) => r.value === ratioMode)?.aspect;
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Editor toolbar */}
-      <div className="editor-toolbar">
-        <button className="btn btn-icon" onClick={onPrev} disabled={saving} title="上一张">
-          <ChevronLeft size={16} />
-        </button>
-        <button className="btn btn-icon" onClick={onNext} disabled={saving} title="下一张">
-          <ChevronRight size={16} />
-        </button>
-        <div className="filename" title={`${settings.source_dir}/${image.relative_path}`}>
-          {(() => {
-            const sourceFolder = settings.source_dir.split(/[\\/]/).filter(Boolean).pop() || '';
-            const parts = image.relative_path.split('/');
-            const dir = parts.slice(0, -1).join('/');
-            const fullDir = sourceFolder ? (dir ? `${sourceFolder}/${dir}` : sourceFolder) : dir;
-            return (
-              <>
-                {fullDir && <span className="file-dir">{fullDir}/</span>}
-                <span className="file-name">{image.filename}</span>
-              </>
-            );
-          })()}
-        </div>
-        <div className="meta">{preview ? `${preview.original_width}×${preview.original_height}` : ''}</div>
-        <button className="btn btn-icon btn-sm" onClick={() => setZoom((z) => clampZoom(z - BUTTON_ZOOM_STEP))} title="缩小" disabled={saving}>
-          <ZoomOut size={14} />
-        </button>
-        <span style={{ fontSize: 12, color: 'var(--muted)', minWidth: 40, textAlign: 'center' }}>{Math.round(zoom * 100)}%</span>
-        <button className="btn btn-icon btn-sm" onClick={() => setZoom((z) => clampZoom(z + BUTTON_ZOOM_STEP))} title="放大" disabled={saving}>
-          <ZoomIn size={14} />
-        </button>
-        <button className="btn btn-icon btn-sm" onClick={() => setZoom(fitZoom)} title="适应窗口" disabled={saving}>
-          <RotateCcw size={14} />
-        </button>
-      </div>
+      <ImageEditorToolbar
+        onPrev={onPrev}
+        onNext={onNext}
+        saving={saving}
+        sourceDir={settings.source_dir}
+        relativePath={image.relative_path}
+        filename={image.filename}
+        dimensions={preview ? `${preview.original_width}×${preview.original_height}` : ''}
+        zoom={zoom}
+        fitZoom={fitZoom}
+        onZoomChange={setZoom}
+      />
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* Canvas */}
-        <div
-          ref={editorViewportRef}
-          onWheel={handleWheelZoom}
-          className="canvas-area"
-        >
-          {preview ? (
-            <div
-              className={`zoom-wrapper crop-guide crop-guide-${guideMode}`}
-              style={{
-                width: `${preview.preview_width * zoom}px`,
-                height: `${preview.preview_height * zoom}px`,
-              }}
-            >
-              <ReactCrop
-                crop={crop}
-                onChange={(_, percentCrop) => {
-                  setCrop(percentCrop);
-                  setCompletedCrop(percentCrop);
-                }}
-                onComplete={(_, percentCrop) => {
-                  setCrop(percentCrop);
-                  setCompletedCrop(percentCrop);
-                }}
-                aspect={currentAspect}
-              >
-                <img
-                  src={preview.data_url}
-                  alt={image.filename}
-                  style={{ width: '100%', height: '100%', display: 'block' }}
-                  draggable={false}
-                />
-              </ReactCrop>
-            </div>
-          ) : (
-            <div className="empty-state">
-              <div>加载预览中...</div>
-            </div>
-          )}
-        </div>
+        <CropCanvas
+          preview={preview}
+          imageFilename={image.filename}
+          crop={crop}
+          onCropChange={setCrop}
+          onCropComplete={setCompletedCrop}
+          currentAspect={currentAspect}
+          guideMode={guideMode}
+          zoom={zoom}
+          onWheelZoom={handleWheelZoom}
+          editorViewportRef={editorViewportRef}
+        />
 
-        {/* Inspector */}
-        <div className="inspector">
-          <div className="panel-group">
-            <div className="panel-group-title">输出目录</div>
-            <div style={{ fontSize: 12, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={settings.output_dir}>
-              {settings.output_dir || '未设置'}
-            </div>
-          </div>
-
-          <div className="panel-group">
-            <div className="panel-group-title">裁剪名称</div>
-            <input
-              className="input"
-              type="text"
-              value={cropName}
-              onChange={(e) => setCropName(e.target.value)}
-              placeholder="例如: 16_9_banner"
-            />
-          </div>
-
-          <div className="panel-group">
-            <div className="panel-group-title">比例</div>
-            <div className="ratio-grid">
-              {RATIOS.map((r) => (
-                <button
-                  key={r.value}
-                  type="button"
-                  className={`ratio-btn${ratioMode === r.value ? ' active' : ''}`}
-                  onClick={() => handleRatioChange(r.value)}
-                  disabled={saving}
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="panel-group">
-            <div className="panel-group-title">输出模式</div>
-            <div className="ratio-grid">
-              <button
-                type="button"
-                className={`ratio-btn${outputMode === 'crop' ? ' active' : ''}`}
-                onClick={() => setOutputMode('crop')}
-                disabled={saving}
-              >
-                硬裁剪
-              </button>
-              <button
-                type="button"
-                className={`ratio-btn${outputMode === 'mask' ? ' active' : ''}`}
-                onClick={() => setOutputMode('mask')}
-                disabled={saving}
-              >
-                遮罩保留
-              </button>
-            </div>
-          </div>
-
-          <div className="panel-group">
-            <div className="panel-group-title">星级</div>
-            <div style={{ display: 'flex', gap: 4 }}>
-              {[1, 2, 3].map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  className="btn btn-icon btn-sm"
-                  onClick={() => setRating(rating === s ? 0 : s as 1 | 2 | 3)}
-                  style={{ color: s <= rating ? 'var(--accent)' : 'var(--muted)' }}
-                  title={`${s}星`}
-                >
-                  ★
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="panel-group">
-            <div className="panel-group-title">辅助线</div>
-            <select
-              className="select"
-              value={guideMode}
-              onChange={(e) => setGuideMode(e.target.value as GuideMode)}
-            >
-              <option value="none">无</option>
-              <option value="thirds">三分线</option>
-              <option value="diagonal">对角线</option>
-              <option value="cross">十字线</option>
-              <option value="thirds_diagonal">三分线 + 对角线</option>
-              <option value="thirds_cross">三分线 + 十字线</option>
-            </select>
-          </div>
-
-          <div className="panel-group">
-            <div className="panel-group-title">裁剪坐标</div>
-            <div style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'monospace', lineHeight: 1.6 }}>
-              {completedCrop && preview ? (
-                <>
-                  x: {Math.round((completedCrop.x * preview.original_width) / 100)}<br />
-                  y: {Math.round((completedCrop.y * preview.original_height) / 100)}<br />
-                  w:{" "}
-                  <input
-                    type="number"
-                    min={1}
-                    max={preview.original_width}
-                    value={Math.round((completedCrop.width * preview.original_width) / 100)}
-                    onChange={(e) => handleWidthChange(Number(e.target.value))}
-                    style={{ width: 60, fontSize: 12, fontFamily: 'monospace' }}
-                  />
-                  <br />
-                  h:{" "}
-                  <input
-                    type="number"
-                    min={1}
-                    max={preview.original_height}
-                    value={Math.round((completedCrop.height * preview.original_height) / 100)}
-                    onChange={(e) => handleHeightChange(Number(e.target.value))}
-                    style={{ width: 60, fontSize: 12, fontFamily: 'monospace' }}
-                  />
-                </>
-              ) : (
-                '未选择'
-              )}
-            </div>
-          </div>
-
-          <div className="panel-group">
-            {isRecropActive ? (
-              <>
-                <button
-                  className="btn btn-accent"
-                  onClick={handlePreviewRecrop}
-                  disabled={saving || !completedCrop}
-                  style={{ width: '100%', marginBottom: 8 }}
-                >
-                  <Eye size={14} />
-                  预览重裁
-                </button>
-                <button
-                  className="btn"
-                  onClick={onCancelRecrop}
-                  disabled={saving}
-                  style={{ width: '100%', marginBottom: 8 }}
-                >
-                  取消重裁
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  className="btn btn-success"
-                  onClick={handleSave}
-                  disabled={saving || !completedCrop}
-                  style={{ width: '100%', marginBottom: 8 }}
-                >
-                  <Save size={14} />
-                  {saving ? '保存中...' : '保存裁剪'}
-                </button>
-                {onSaveAndContinue && (
-                  <button
-                    className="btn btn-accent"
-                    onClick={handleSaveAndContinue}
-                    disabled={saving || !completedCrop}
-                    style={{ width: '100%', marginBottom: 8 }}
-                  >
-                    <Save size={14} />
-                    保存并继续裁剪
-                  </button>
-                )}
-              </>
-            )}
-
-            {!isRecropActive && (
-              <button
-                className="btn"
-                onClick={onSkipImage}
-                disabled={saving}
-                style={{ width: '100%', marginBottom: 8 }}
-              >
-                跳过
-              </button>
-            )}
-
-            <button
-              className="btn btn-danger"
-              onClick={handleDelete}
-              disabled={saving}
-              style={{ width: '100%' }}
-            >
-              <Trash2 size={14} />
-              删除原图
-            </button>
-          </div>
-
-          <div className="panel-group">
-            <div className="panel-group-title">已有裁剪 ({existingCrops.length})</div>
-            {existingCrops.length === 0 && (
-              <div style={{ fontSize: 12, color: 'var(--muted)' }}>无</div>
-            )}
-            {existingCrops.map((c, i) => (
-              <div key={i} style={{ fontSize: 11, color: 'var(--muted)', padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <span style={{ color: 'var(--text)' }}>{c.crop_name}</span>
-                  {(c.rating || 0) > 0 && (
-                    <span style={{ color: 'var(--accent)' }}>{'★'.repeat(c.rating || 0)}</span>
-                  )}
-                </div>
-                <div>{c.width}×{c.height} ({c.ratio_mode})</div>
-                <div style={{ color: 'var(--muted-2)', fontSize: 10 }}>{c.output_filename}</div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <ImageEditorInspector
+          settings={settings}
+          cropName={cropName}
+          onCropNameChange={setCropName}
+          ratioMode={ratioMode}
+          onRatioChange={handleRatioChange}
+          outputMode={outputMode}
+          onOutputModeChange={setOutputMode}
+          rating={rating}
+          onRatingChange={setRating}
+          guideMode={guideMode}
+          onGuideModeChange={setGuideMode}
+          completedCrop={completedCrop}
+          preview={preview}
+          onWidthChange={handleWidthChange}
+          onHeightChange={handleHeightChange}
+          isRecropActive={!!isRecropActive}
+          saving={saving}
+          onPreviewRecrop={handlePreviewRecrop}
+          onCancelRecrop={onCancelRecrop}
+          onSave={handleSave}
+          onSaveAndContinue={onSaveAndContinue ? handleSaveAndContinue : undefined}
+          onSkipImage={onSkipImage}
+          onDelete={handleDelete}
+          existingCrops={existingCrops}
+        />
       </div>
     </div>
   );
