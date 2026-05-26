@@ -1,6 +1,6 @@
 [package]
 name = "wallhaven-crop-recorder"
-version = "1.3.0"
+version = "1.4.0"
 description = "Wallhaven 图片裁剪记录器"
 authors = ["0x727a"]
 edition = "2021"

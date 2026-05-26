@@ -1,3 +1,37 @@
+# v1.4.0
+
+## 性能优化
+
+- **主编辑预览 Base64 → 文件路径**：新增 `resolve_preview_image`，后端只读图片尺寸（不解码整张图），`allow_file` 放行原图；前端用 `convertFileSrc` 直接渲染。内存占用大幅下降，大图切换不再卡顿
+- **删除旧 Base64 预览命令**：`read_preview_image` 已无前端调用，完整移除后端命令、`PreviewImage` 类型、`readPreviewImage` API，减少误用
+- **删除单条缩略图命令**：`ensure_cropped_thumbnail` 已无人调用，前端全面改用批量版 `ensureCroppedThumbnails`
+- **已裁记录字符串精确匹配**：`resolve_cropped_image_path` / `ensure_cropped_thumbnails` 去掉循环内 `fs::canonicalize`，只认 JSON 里的 `output_path` 精确字符串，避免 NAS 上 N 次系统调用
+- **编辑器视口自适应**：`ResizeObserver` 监听编辑器尺寸变化，自动重算 `fitZoom`；用户手动缩放时不会被强行覆盖
+
+## 并发安全
+
+- **records_lock 保护 JSON 读写**：`AppState` 新增 `Arc<Mutex<()>>`，所有读改写 crops.json / skipped.json 的流程必须持锁。`save_crop`、`save_recrop`、`delete_crop_record`、`skip_image`、`unskip_image`、`delete_original_image`、`run_batch_from_json` 均已加锁
+- **批量导入锁外处理图片**：循环内只做 `create_crop_file`，结束后锁内重新读取 crops、追加新记录、写回。图片处理不阻塞其他记录操作，也不会丢写
+- **批量导入失败自动清理**：若最后 `write_crops` 失败，遍历本批新生成的裁剪图并删除，避免留下大量无记录的孤儿文件
+- **delete_crop_record 先写后删**：`write_crops` 在 `fs::remove_file` 之前执行。即使删文件失败，JSON 里也不会留下指向已删除文件的幽灵记录
+
+## Bug 修复
+
+- **重裁旧文件删除失败不静默**：`save_recrop` 返回 `SaveRecropResult { record, warning }`，旧文件删除失败时 `warning = Some(...)`，前端弹窗提示用户手动清理。JSON 已成功更新，不再因旧文件删不掉而回滚
+- **跳过操作失败不静默**：`handleSkipImage` 添加 try-catch，跳过失败时弹窗提示，连续裁剪锁不被提前清掉
+- **delete_original_image 同持 records_lock**：清理 crops + skipped 的读改写全程在锁内，避免与并发 save/delete 竞争
+
+## 内部重构
+
+- `remove_skip_record` 从 `records.rs` 删除，逻辑内联到 `save_crop_blocking` 和 `unskip_image` 的锁内
+- `save_recrop_blocking` 分段加锁：锁内读旧记录索引 → 锁外 `create_crop_file` → 锁内验证索引未变后替换写回
+- `ImageEditor` 两处 effect 用 `ratioModeRef` / `isRecropActiveRef` 消除 `eslint-disable`，不改变触发条件
+- 删除 `paths.rs` 上错位的 `#[cfg_attr(mobile, tauri::mobile_entry_point)]`
+- `tempfile = "3"` 从 `[dependencies]` 移到 `[dev-dependencies]`
+- 删除未使用的 `BatchPanel.tsx`
+
+---
+
 # v1.2.1
 
 ## 性能优化
