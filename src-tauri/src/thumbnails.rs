@@ -1,11 +1,9 @@
-use base64::Engine;
-use image::ImageEncoder;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 
-use crate::models::{AppState, CropRecord, PreviewImage};
+use crate::models::{AppState, CropRecord, ResolvedPreview};
 use crate::paths::{canonical_source_dir, is_image_file, path_string, validate_source_path};
 use crate::records::read_crops;
 
@@ -137,10 +135,11 @@ pub(crate) async fn ensure_thumbnail(
 }
 
 #[tauri::command]
-pub(crate) async fn read_preview_image(
+pub(crate) async fn resolve_preview_image(
+    handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     source_path: String,
-) -> Result<PreviewImage, String> {
+) -> Result<ResolvedPreview, String> {
     let source_dir = {
         let settings = state
             .settings
@@ -149,44 +148,43 @@ pub(crate) async fn read_preview_image(
         settings.source_dir.clone()
     };
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let canon = validate_source_path(&source_dir, &source_path)?;
-        let img = image::open(&canon).map_err(|e| format!("打开图片失败: {}", e))?;
-        let (orig_w, orig_h) = (img.width(), img.height());
+    let canon = validate_source_path(&source_dir, &source_path)?;
+    let src_path = path_string(&canon);
 
-        let preview = if orig_w.max(orig_h) > 1800 {
-            img.thumbnail(1800, 1800)
-        } else {
-            img
-        };
+    handle
+        .asset_protocol_scope()
+        .allow_file(&canon)
+        .map_err(|e| format!("放行预览图失败: {}", e))?;
 
-        let rgb = preview.to_rgb8();
-        let mut buffer: Vec<u8> = Vec::new();
-        let mut cursor = std::io::Cursor::new(&mut buffer);
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 75);
-        encoder
-            .write_image(
-                rgb.as_raw(),
-                rgb.width(),
-                rgb.height(),
-                image::ExtendedColorType::Rgb8,
-            )
-            .map_err(|e| format!("编码预览图失败: {}", e))?;
-
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&buffer);
-        let data_url = format!("data:image/jpeg;base64,{}", b64);
-
-        Ok(PreviewImage {
-            data_url,
-            original_width: orig_w,
-            original_height: orig_h,
-            preview_width: preview.width(),
-            preview_height: preview.height(),
-        })
+    let canon_clone = canon.clone();
+    let (orig_w, orig_h) = tauri::async_runtime::spawn_blocking(move || {
+        let reader = image::ImageReader::open(&canon_clone)
+            .map_err(|e| format!("打开图片失败: {}", e))?;
+        let (w, h) = reader.into_dimensions()
+            .map_err(|e| format!("读取图片尺寸失败: {}", e))?;
+        Ok::<(u32, u32), String>((w, h))
     })
     .await
-    .map_err(|e| format!("读取预览图任务失败: {}", e))
-    .and_then(|r| r)
+    .map_err(|e| format!("读取图片尺寸任务失败: {}", e))
+    .and_then(|r| r)?;
+
+    let (preview_w, preview_h) = if orig_w.max(orig_h) > 1800 {
+        let ratio = 1800.0 / (orig_w.max(orig_h) as f64);
+        (
+            (orig_w as f64 * ratio).round() as u32,
+            (orig_h as f64 * ratio).round() as u32,
+        )
+    } else {
+        (orig_w, orig_h)
+    };
+
+    Ok(ResolvedPreview {
+        src_path,
+        original_width: orig_w,
+        original_height: orig_h,
+        preview_width: preview_w,
+        preview_height: preview_h,
+    })
 }
 
 pub(crate) fn generate_crop_thumbnail_sync(
@@ -254,42 +252,6 @@ pub(crate) async fn generate_crop_thumbnail(
     .await
     .map_err(|e| format!("生成缩略图任务失败: {}", e))
     .and_then(|r| r)
-}
-
-#[tauri::command]
-pub(crate) async fn ensure_cropped_thumbnail(
-    handle: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    output_path: String,
-) -> Result<String, String> {
-    let source_dir = {
-        let settings = state
-            .settings
-            .lock()
-            .map_err(|e| format!("锁错误: {}", e))?;
-        settings.source_dir.clone()
-    };
-
-    let records = read_crops(&source_dir)?;
-    let path = fs::canonicalize(&output_path).map_err(|e| format!("裁剪图不存在: {}", e))?;
-    let found = records.iter().any(|r| {
-        if r.output_path == output_path {
-            return true;
-        }
-        // 字符串不匹配时才走 canonical 慢路径
-        if let Ok(rp) = fs::canonicalize(&r.output_path) {
-            return path == rp;
-        }
-        false
-    });
-    if !found {
-        return Err("裁剪图不在记录中".into());
-    }
-    if !is_image_file(&path) {
-        return Err("不是支持的图片文件".into());
-    }
-
-    generate_crop_thumbnail(&handle, &output_path).await
 }
 
 #[tauri::command]

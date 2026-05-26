@@ -431,7 +431,7 @@ export default function App() {
   const handleConfirmRecrop = useCallback(async (request: SaveCropRequest) => {
     if (!recropTarget) return;
     try {
-      await saveRecrop({
+      const result = await saveRecrop({
         old_output_path: recropTarget.output_path,
         crop: request,
       });
@@ -455,6 +455,10 @@ export default function App() {
         preRecropCategory,
         null
       );
+
+      if (result.warning) {
+        alert(result.warning);
+      }
       setSelectedIndex(nextImages.length > 0 ? 0 : -1);
 
       setRecropTarget(null);
@@ -466,32 +470,36 @@ export default function App() {
 
   const handleSkipImage = useCallback(async () => {
     if (!selectedImage) return;
-    setContinueCropLock(null);
-    const skippedSourcePath = selectedImage.source_path;
-    const skippedRelativePath = selectedImage.relative_path;
-    const record = await skipImage(skippedSourcePath);
-    setSkipRecords((prev) => ({
-      ...prev,
-      [record.source_path]: record,
-      [skippedSourcePath]: record,
-    }));
-    // Compute next images to check if selectedIndex needs adjustment
-    const nextSkipRecords = {
-      ...skipRecords,
-      [record.source_path]: record,
-      [skippedSourcePath]: record,
-    };
-    const nextImages = computeVisibleImages(
-      allImages,
-      cropRecords,
-      nextSkipRecords,
-      statusFilter,
-      search,
-      category,
-      null
-    );
-    if (selectedIndex >= nextImages.length) {
-      setSelectedIndex(nextImages.length > 0 ? nextImages.length - 1 : -1);
+    try {
+      const skippedSourcePath = selectedImage.source_path;
+      const skippedRelativePath = selectedImage.relative_path;
+      const record = await skipImage(skippedSourcePath);
+      setContinueCropLock(null);
+      setSkipRecords((prev) => ({
+        ...prev,
+        [record.source_path]: record,
+        [skippedSourcePath]: record,
+      }));
+      // Compute next images to check if selectedIndex needs adjustment
+      const nextSkipRecords = {
+        ...skipRecords,
+        [record.source_path]: record,
+        [skippedSourcePath]: record,
+      };
+      const nextImages = computeVisibleImages(
+        allImages,
+        cropRecords,
+        nextSkipRecords,
+        statusFilter,
+        search,
+        category,
+        null
+      );
+      if (selectedIndex >= nextImages.length) {
+        setSelectedIndex(nextImages.length > 0 ? nextImages.length - 1 : -1);
+      }
+    } catch (e: any) {
+      alert('跳过操作失败: ' + (e?.message || String(e)));
     }
   }, [selectedImage, selectedIndex, allImages, cropRecords, skipRecords, statusFilter, search, category]);
 

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { GuideMode, OutputMode } from './types';
 
 interface CropCanvasProps {
-  preview: { data_url: string; preview_width: number; preview_height: number } | null;
+  preview: { src_url: string; preview_width: number; preview_height: number } | null;
   imageFilename: string;
   crop: PercentCrop | undefined;
   onCropChange: (crop: PercentCrop) => void;
@@ -123,7 +123,7 @@ export function CropCanvas({
             aspect={currentAspect}
           >
             <img
-              src={preview.data_url}
+              src={preview.src_url}
               alt={imageFilename}
               style={{ width: '100%', height: '100%', display: 'block' }}
               draggable={false}

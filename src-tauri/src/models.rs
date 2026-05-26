@@ -91,8 +91,8 @@ pub struct BatchResult {
 }
 
 #[derive(Serialize, Clone, Debug)]
-pub struct PreviewImage {
-    pub data_url: String,
+pub struct ResolvedPreview {
+    pub src_path: String,
     pub original_width: u32,
     pub original_height: u32,
     pub preview_width: u32,
@@ -106,6 +106,12 @@ pub(crate) struct SaveRecropRequest {
 }
 
 #[derive(Serialize, Clone, Debug)]
+pub(crate) struct SaveRecropResult {
+    pub(crate) record: CropRecord,
+    pub(crate) warning: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
 pub(crate) struct CropPreview {
     pub(crate) data_url: String,
     pub(crate) width: u32,
@@ -115,4 +121,5 @@ pub(crate) struct CropPreview {
 pub struct AppState {
     pub settings: Mutex<Settings>,
     pub cancel_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    pub records_lock: Arc<Mutex<()>>,
 }

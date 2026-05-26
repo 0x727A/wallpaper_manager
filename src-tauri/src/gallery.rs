@@ -120,15 +120,18 @@ pub(crate) fn delete_original_image(
     state: tauri::State<'_, AppState>,
     source_path: String,
 ) -> Result<(), String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|e| format!("锁错误: {}", e))?;
-    let source_dir = settings.source_dir.clone();
-    drop(settings);
+    let (source_dir, records_lock) = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        (settings.source_dir.clone(), state.records_lock.clone())
+    };
 
     let canon = validate_source_path(&source_dir, &source_path)?;
     let root = canonical_source_dir(&source_dir)?;
+
+    let _guard = records_lock.lock().map_err(|e| format!("记录锁错误: {}", e))?;
 
     let mut records = read_crops(&source_dir)?;
     let before = records.len();

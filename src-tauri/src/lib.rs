@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 mod models;
@@ -30,6 +30,7 @@ pub fn run() {
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 cancel_flags: Mutex::new(HashMap::new()),
+                records_lock: Arc::new(Mutex::new(())),
             });
 
             let cache_dir = app
@@ -113,14 +114,13 @@ pub fn run() {
             pick_source_dir,
             pick_json_file,
             ensure_thumbnail,
-            read_preview_image,
+            resolve_preview_image,
             save_crop,
             read_crop_records,
             run_batch_from_json,
             cancel_batch,
             delete_original_image,
             resolve_cropped_image_path,
-            ensure_cropped_thumbnail,
             ensure_cropped_thumbnails,
             resolve_original_for_record,
             preview_crop,

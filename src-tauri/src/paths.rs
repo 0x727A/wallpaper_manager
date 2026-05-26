@@ -144,7 +144,6 @@ pub(crate) fn detect_nsfw(path: &Path, root: &Path) -> bool {
     s.contains("nsfw") || s.contains("explicit") || s.contains("porn")
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub(crate) fn validate_wallhaven_root(dir: &Path) -> Result<(), String> {
     if !dir.exists() || !dir.is_dir() {
         return Err("请选择有效的目录".into());

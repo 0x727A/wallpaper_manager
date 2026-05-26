@@ -6,13 +6,14 @@ use std::path::Path;
 use tauri::Manager;
 
 use crate::models::{
-    AppState, CropPreview, CropRecord, SaveCropRequest, SaveRecropRequest, SkipRecord,
+    AppState, CropPreview, CropRecord, SaveCropRequest, SaveRecropRequest, SaveRecropResult,
+    SkipRecord,
 };
 use crate::paths::{
     canonical_source_dir, is_image_file, path_string, relative_path_for_record, sanitize_filename,
     suggested_output_dir, validate_source_path,
 };
-use crate::records::{read_crops, read_skipped, remove_skip_record, write_crops, write_skipped};
+use crate::records::{read_crops, read_skipped, write_crops, write_skipped};
 use crate::thumbnails::generate_crop_thumbnail;
 
 fn generate_output_filename(
@@ -130,6 +131,7 @@ fn save_crop_blocking(
     source_dir: &str,
     output_dir: &str,
     request: &SaveCropRequest,
+    records_lock: &std::sync::Mutex<()>,
 ) -> Result<CropRecord, String> {
     let canon = validate_source_path(source_dir, &request.source_path)?;
     let mut record = create_crop_file(
@@ -146,12 +148,26 @@ fn save_crop_blocking(
     )?;
     record.rating = request.rating.min(3);
 
+    let _guard = records_lock.lock().map_err(|e| format!("记录锁错误: {}", e))?;
+
     let mut records = read_crops(source_dir)?;
     records.push(record.clone());
     write_crops(source_dir, &records)?;
 
-    if let Err(e) = remove_skip_record(source_dir, &request.source_path) {
-        eprintln!("保存裁剪成功，但清除跳过记录失败: {}", e);
+    // 清除对应的跳过记录
+    let mut skipped = read_skipped(source_dir)?;
+    let before = skipped.len();
+    let canon_str = path_string(&canon);
+    let canon_raw = canon.to_string_lossy().to_string();
+    skipped.retain(|r| {
+        r.source_path != request.source_path
+            && r.source_path != canon_str
+            && r.source_path != canon_raw
+    });
+    if skipped.len() != before {
+        if let Err(e) = write_skipped(source_dir, &skipped) {
+            eprintln!("保存裁剪成功，但清除跳过记录失败: {}", e);
+        }
     }
 
     Ok(record)
@@ -163,19 +179,23 @@ pub(crate) async fn save_crop(
     state: tauri::State<'_, AppState>,
     request: SaveCropRequest,
 ) -> Result<CropRecord, String> {
-    let (source_dir, output_dir) = {
+    let (source_dir, output_dir, records_lock) = {
         let settings = state
             .settings
             .lock()
             .map_err(|e| format!("锁错误: {}", e))?;
-        (settings.source_dir.clone(), settings.output_dir.clone())
+        (
+            settings.source_dir.clone(),
+            settings.output_dir.clone(),
+            state.records_lock.clone(),
+        )
     };
 
     let source_dir_clone = source_dir.clone();
     let output_dir_clone = output_dir.clone();
     let request_clone = request;
     let record = tauri::async_runtime::spawn_blocking(move || {
-        save_crop_blocking(&source_dir_clone, &output_dir_clone, &request_clone)
+        save_crop_blocking(&source_dir_clone, &output_dir_clone, &request_clone, &records_lock)
     })
     .await
     .map_err(|e| format!("保存裁剪任务失败: {}", e))
@@ -197,13 +217,19 @@ pub(crate) fn delete_crop_record(
     state: tauri::State<'_, AppState>,
     output_path: String,
 ) -> Result<CropRecord, String> {
-    let (source_dir, output_dir) = {
+    let (source_dir, output_dir, records_lock) = {
         let settings = state
             .settings
             .lock()
             .map_err(|e| format!("锁错误: {}", e))?;
-        (settings.source_dir.clone(), settings.output_dir.clone())
+        (
+            settings.source_dir.clone(),
+            settings.output_dir.clone(),
+            state.records_lock.clone(),
+        )
     };
+
+    let _guard = records_lock.lock().map_err(|e| format!("记录锁错误: {}", e))?;
 
     // 1. 读 crops.json，先确认记录存在
     let mut records = read_crops(&source_dir)?;
@@ -233,20 +259,24 @@ pub(crate) fn delete_crop_record(
         fs::canonicalize(&output_dir).map_err(|e| format!("输出目录无效: {}", e))?
     };
 
-    // 3. 若文件仍存在，验证其在输出目录内并删除
+    // 3. 若文件仍存在，先验证其在输出目录内（路径安全必须在写 JSON 前完成）
     if let Some(ref target) = target_canon {
         if !target.starts_with(&output_root) {
             return Err("裁剪图不在输出目录内".into());
         }
+    }
+
+    // 4. 先写回 crops.json，再删物理文件
+    //    这样即使删文件失败，也只是磁盘上残留孤儿裁剪图，不会产生幽灵记录
+    write_crops(&source_dir, &records)?;
+
+    if let Some(ref target) = target_canon {
         if target.exists() {
             if let Err(e) = fs::remove_file(target) {
                 return Err(format!("删除裁剪图失败: {}", e));
             }
         }
     }
-
-    // 4. 写回 crops.json
-    write_crops(&source_dir, &records)?;
 
     Ok(removed)
 }
@@ -266,6 +296,12 @@ pub(crate) fn resolve_cropped_image_path(
     };
 
     let records = read_crops(&source_dir)?;
+
+    // 只用字符串精确匹配，避免 NAS 上 N 次系统调用
+    if !records.iter().any(|r| r.output_path == output_path) {
+        return Err("裁剪图不在记录中".into());
+    }
+
     let path = fs::canonicalize(&output_path).map_err(|e| format!("裁剪图不存在: {}", e))?;
 
     // 验证裁剪图位于输出目录内
@@ -277,20 +313,6 @@ pub(crate) fn resolve_cropped_image_path(
     };
     if !path.starts_with(&output_root) {
         return Err("裁剪图不在输出目录内".into());
-    }
-
-    let found = records.iter().any(|r| {
-        if r.output_path == output_path {
-            return true;
-        }
-        // 字符串不匹配时才走 canonical 慢路径
-        if let Ok(rp) = fs::canonicalize(&r.output_path) {
-            return path == rp;
-        }
-        false
-    });
-    if !found {
-        return Err("裁剪图不在记录中".into());
     }
 
     if !is_image_file(&path) {
@@ -378,13 +400,20 @@ fn save_recrop_blocking(
     source_dir: &str,
     output_dir: &str,
     request: &SaveRecropRequest,
-) -> Result<CropRecord, String> {
-    let mut records = read_crops(source_dir)?;
-    let idx = records
-        .iter()
-        .position(|r| r.output_path == request.old_output_path)
-        .ok_or_else(|| "未找到旧裁剪记录".to_string())?;
+    records_lock: &std::sync::Mutex<()>,
+) -> Result<SaveRecropResult, String> {
+    // 第一段锁：读取现有记录并定位旧记录索引
+    let (idx, old_output_path) = {
+        let _guard = records_lock.lock().map_err(|e| format!("记录锁错误: {}", e))?;
+        let records = read_crops(source_dir)?;
+        let idx = records
+            .iter()
+            .position(|r| r.output_path == request.old_output_path)
+            .ok_or_else(|| "未找到旧裁剪记录".to_string())?;
+        (idx, records[idx].output_path.clone())
+    };
 
+    // 锁外：创建新裁剪文件（图片处理，可能耗时，不应阻塞其他记录操作）
     let canon = validate_source_path(source_dir, &request.crop.source_path)?;
     let mut record = create_crop_file(
         &canon,
@@ -400,15 +429,28 @@ fn save_recrop_blocking(
     )?;
     record.rating = request.crop.rating.min(3);
 
-    records[idx] = record.clone();
-
-    if let Err(e) = write_crops(source_dir, &records) {
-        if let Err(del_e) = fs::remove_file(&record.output_path) {
-            eprintln!("写入 crops.json 失败后清理新裁剪图失败: {}", del_e);
+    // 第二段锁：重新读取、验证索引未变、替换、写回
+    {
+        let _guard = records_lock.lock().map_err(|e| format!("记录锁错误: {}", e))?;
+        let mut records = read_crops(source_dir)?;
+        if idx >= records.len() || records[idx].output_path != old_output_path {
+            // 并发修改导致索引失效，清理新文件并返回错误
+            let _ = fs::remove_file(&record.output_path);
+            return Err("记录已被并发修改，请重试".into());
         }
-        return Err(e);
+        records[idx] = record.clone();
+
+        if let Err(e) = write_crops(source_dir, &records) {
+            drop(_guard);
+            if let Err(del_e) = fs::remove_file(&record.output_path) {
+                eprintln!("写入 crops.json 失败后清理新裁剪图失败: {}", del_e);
+            }
+            return Err(e);
+        }
     }
 
+    // 锁外：删除旧物理文件
+    let mut warning: Option<String> = None;
     let old_path = fs::canonicalize(&request.old_output_path).ok();
     let output_root = fs::canonicalize(output_dir).map_err(|e| format!("输出目录无效: {}", e))?;
 
@@ -416,12 +458,12 @@ fn save_recrop_blocking(
         let new_path = fs::canonicalize(&record.output_path).ok();
         if old_path.starts_with(&output_root) && Some(old_path.as_path()) != new_path.as_deref() {
             if let Err(e) = fs::remove_file(&old_path) {
-                eprintln!("删除旧裁剪图失败: {}", e);
+                warning = Some(format!("重裁已保存，但旧裁剪图删除失败：{}", e));
             }
         }
     }
 
-    Ok(record)
+    Ok(SaveRecropResult { record, warning })
 }
 
 #[tauri::command]
@@ -429,34 +471,38 @@ pub(crate) async fn save_recrop(
     handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     request: SaveRecropRequest,
-) -> Result<CropRecord, String> {
-    let (source_dir, output_dir) = {
+) -> Result<SaveRecropResult, String> {
+    let (source_dir, output_dir, records_lock) = {
         let settings = state
             .settings
             .lock()
             .map_err(|e| format!("锁错误: {}", e))?;
-        (settings.source_dir.clone(), settings.output_dir.clone())
+        (
+            settings.source_dir.clone(),
+            settings.output_dir.clone(),
+            state.records_lock.clone(),
+        )
     };
 
     let source_dir_clone = source_dir.clone();
     let output_dir_clone = output_dir.clone();
     let request_clone = request;
-    let record = tauri::async_runtime::spawn_blocking(move || {
-        save_recrop_blocking(&source_dir_clone, &output_dir_clone, &request_clone)
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        save_recrop_blocking(&source_dir_clone, &output_dir_clone, &request_clone, &records_lock)
     })
     .await
     .map_err(|e| format!("重裁保存任务失败: {}", e))
     .and_then(|r| r)?;
 
     let thumb_handle = handle.clone();
-    let thumb_path = record.output_path.clone();
+    let thumb_path = result.record.output_path.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = generate_crop_thumbnail(&thumb_handle, &thumb_path).await {
             eprintln!("重裁保存成功，但生成缩略图失败: {}", e);
         }
     });
 
-    Ok(record)
+    Ok(result)
 }
 
 #[tauri::command]
@@ -464,12 +510,13 @@ pub(crate) fn skip_image(
     state: tauri::State<'_, AppState>,
     source_path: String,
 ) -> Result<SkipRecord, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|e| format!("锁错误: {}", e))?;
-    let source_dir = settings.source_dir.clone();
-    drop(settings);
+    let (source_dir, records_lock) = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        (settings.source_dir.clone(), state.records_lock.clone())
+    };
 
     let canon = validate_source_path(&source_dir, &source_path)?;
     let root = canonical_source_dir(&source_dir)?;
@@ -479,6 +526,8 @@ pub(crate) fn skip_image(
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_string();
+
+    let _guard = records_lock.lock().map_err(|e| format!("记录锁错误: {}", e))?;
 
     let mut records = read_skipped(&source_dir)?;
     let canon_str = path_string(&canon);
@@ -499,12 +548,28 @@ pub(crate) fn unskip_image(
     state: tauri::State<'_, AppState>,
     source_path: String,
 ) -> Result<(), String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|e| format!("锁错误: {}", e))?;
-    let source_dir = settings.source_dir.clone();
-    drop(settings);
+    let (source_dir, records_lock) = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        (settings.source_dir.clone(), state.records_lock.clone())
+    };
 
-    remove_skip_record(&source_dir, &source_path)
+    let _guard = records_lock.lock().map_err(|e| format!("记录锁错误: {}", e))?;
+
+    let mut records = read_skipped(&source_dir)?;
+    let before = records.len();
+    let canon = fs::canonicalize(&source_path).ok();
+    let canon_str = canon.as_ref().map(|p| path_string(p));
+    let canon_raw = canon.as_ref().map(|p| p.to_string_lossy().to_string());
+    records.retain(|r| {
+        r.source_path != source_path
+            && canon_str.as_ref().map_or(true, |cs| r.source_path != *cs)
+            && canon_raw.as_ref().map_or(true, |cr| r.source_path != *cr)
+    });
+    if records.len() != before {
+        write_skipped(&source_dir, &records)?;
+    }
+    Ok(())
 }

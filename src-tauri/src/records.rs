@@ -3,7 +3,6 @@ use std::path::Path;
 use tauri::State;
 
 use crate::models::{AppState, CropRecord, SkipRecord};
-use crate::paths::path_string;
 
 fn crops_json_path(source_dir: &str) -> std::path::PathBuf {
     Path::new(source_dir).join("crops.json")
@@ -53,23 +52,6 @@ pub(crate) fn write_skipped(source_dir: &str, records: &[SkipRecord]) -> Result<
     }
     let text = serde_json::to_string_pretty(records).map_err(|e| format!("序列化失败: {}", e))?;
     fs::write(&path, text).map_err(|e| format!("写入 skipped.json 失败: {}", e))
-}
-
-pub(crate) fn remove_skip_record(source_dir: &str, source_path: &str) -> Result<(), String> {
-    let mut records = read_skipped(source_dir)?;
-    let before = records.len();
-    let canon = fs::canonicalize(source_path).ok();
-    let canon_str = canon.as_ref().map(|p| path_string(p));
-    let canon_raw = canon.as_ref().map(|p| p.to_string_lossy().to_string());
-    records.retain(|r| {
-        r.source_path != source_path
-            && canon_str.as_ref().map_or(true, |cs| r.source_path != *cs)
-            && canon_raw.as_ref().map_or(true, |cr| r.source_path != *cr)
-    });
-    if records.len() != before {
-        write_skipped(source_dir, &records)?;
-    }
-    Ok(())
 }
 
 #[tauri::command]

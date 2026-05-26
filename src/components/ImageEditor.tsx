@@ -6,7 +6,7 @@ import {
   SaveCropRequest,
   saveCrop,
   deleteOriginalImage,
-  PreviewImage,
+  ResolvedPreview,
 } from '../api';
 import { getCachedPreview, loadPreview } from '../utils/previewCache';
 import { ImageEditorToolbar } from './image-editor/ImageEditorToolbar';
@@ -54,10 +54,14 @@ export function ImageEditor({
   const [completedCrop, setCompletedCrop] = useState<PercentCrop>();
   const [cropName, setCropName] = useState('');
   const [saving, setSaving] = useState(false);
-  const [preview, setPreview] = useState<PreviewImage | null>(null);
+  const [preview, setPreview] = useState<ResolvedPreview | null>(null);
   const editorViewportRef = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState(1);
   const [fitZoom, setFitZoom] = useState(1);
+  const fitZoomRef = useRef(fitZoom);
+  useEffect(() => {
+    fitZoomRef.current = fitZoom;
+  }, [fitZoom]);
 
   const [guideMode, setGuideMode] = useState<GuideMode>(() => {
     return (localStorage.getItem('cropGuideMode') as GuideMode) || 'thirds';
@@ -71,57 +75,15 @@ export function ImageEditor({
 
   const isRecropActive = recropTarget && recropTarget.relative_path === image.relative_path;
 
+  // ref 保存最新值，供 effect 读取，避免把 ratioMode/isRecropActive 加入依赖导致意外重初始化
+  const ratioModeRef = useRef(ratioMode);
+  const isRecropActiveRef = useRef(isRecropActive);
   useEffect(() => {
-    let cancelled = false;
-    const cached = getCachedPreview(image.source_path);
-
-    setCrop(undefined);
-    setCompletedCrop(undefined);
-    setCropName('');
-
-    if (cached) {
-      setPreview(cached);
-      // 缓存命中时直接初始化裁剪框，避免 preview 引用相同导致 effect 不触发
-      const aspect = RATIOS.find((r) => r.value === ratioMode)?.aspect;
-      if (!isRecropActive) {
-        initCrop(cached.original_width, cached.original_height, aspect);
-      }
-    } else {
-      setPreview(null);
-      loadPreview(image.source_path)
-        .then((p) => {
-          if (cancelled) return;
-          setPreview(p);
-        })
-        .catch((err) => {
-          console.error('readPreviewImage failed', err);
-          if (!cancelled) setPreview(null);
-        });
-    }
-
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [image.source_path]);
-
+    ratioModeRef.current = ratioMode;
+  }, [ratioMode]);
   useEffect(() => {
-    if (!preview || !isRecropActive || !recropTarget) return;
-    const rt = recropTarget;
-    onRatioModeChange(rt.ratio_mode);
-    setCropName(rt.crop_name);
-    setOutputMode((rt.output_mode as OutputMode) ?? 'crop');
-    setRating(Math.min(3, Math.max(0, rt.rating ?? 0)) as Rating);
-    const percentCrop: PercentCrop = {
-      unit: '%',
-      x: (rt.x / rt.original_width) * 100,
-      y: (rt.y / rt.original_height) * 100,
-      width: (rt.width / rt.original_width) * 100,
-      height: (rt.height / rt.original_height) * 100,
-    };
-    setCrop(percentCrop);
-    setCompletedCrop(percentCrop);
-  }, [isRecropActive, recropTarget, preview, onRatioModeChange]);
+    isRecropActiveRef.current = isRecropActive;
+  }, [isRecropActive]);
 
   const initCrop = useCallback((w: number, h: number, aspect?: number) => {
     let newCrop: PercentCrop;
@@ -142,31 +104,101 @@ export function ImageEditor({
     setCompletedCrop(newCrop);
   }, []);
 
+  // 图片切换时加载预览并重置裁剪状态
+  useEffect(() => {
+    let cancelled = false;
+    const cached = getCachedPreview(image.source_path);
+
+    setCrop(undefined);
+    setCompletedCrop(undefined);
+    setCropName('');
+
+    if (cached) {
+      setPreview(cached);
+      // 缓存命中时直接初始化裁剪框，避免 preview 引用相同导致 effect 不触发
+      const aspect = RATIOS.find((r) => r.value === ratioModeRef.current)?.aspect;
+      if (!isRecropActiveRef.current) {
+        initCrop(cached.original_width, cached.original_height, aspect);
+      }
+    } else {
+      setPreview(null);
+      loadPreview(image.source_path)
+        .then((p) => {
+          if (cancelled) return;
+          setPreview(p);
+        })
+        .catch((err) => {
+          console.error('resolvePreviewImage failed', err);
+          if (!cancelled) setPreview(null);
+        });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [image.source_path, initCrop]);
+
+  useEffect(() => {
+    if (!preview || !isRecropActive || !recropTarget) return;
+    const rt = recropTarget;
+    onRatioModeChange(rt.ratio_mode);
+    setCropName(rt.crop_name);
+    setOutputMode((rt.output_mode as OutputMode) ?? 'crop');
+    setRating(Math.min(3, Math.max(0, rt.rating ?? 0)) as Rating);
+    const percentCrop: PercentCrop = {
+      unit: '%',
+      x: (rt.x / rt.original_width) * 100,
+      y: (rt.y / rt.original_height) * 100,
+      width: (rt.width / rt.original_width) * 100,
+      height: (rt.height / rt.original_height) * 100,
+    };
+    setCrop(percentCrop);
+    setCompletedCrop(percentCrop);
+  }, [isRecropActive, recropTarget, preview, onRatioModeChange]);
+
+  // preview 首次到达时初始化裁剪框；比例变化由 handleRatioChange 单独处理
   useEffect(() => {
     if (preview) {
-      const aspect = RATIOS.find((r) => r.value === ratioMode)?.aspect;
-      if (!isRecropActive) {
+      const aspect = RATIOS.find((r) => r.value === ratioModeRef.current)?.aspect;
+      if (!isRecropActiveRef.current) {
         initCrop(preview.original_width, preview.original_height, aspect);
       }
     }
-  }, [preview]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [preview, initCrop]);
 
-  useEffect(() => {
-    if (!preview || !editorViewportRef.current) return;
-
+  const calculateFitZoom = useCallback(() => {
+    if (!preview || !editorViewportRef.current) return null;
     const viewport = editorViewportRef.current.getBoundingClientRect();
     const availableW = Math.max(1, viewport.width - 32);
     const availableH = Math.max(1, viewport.height - 32);
+    return Math.min(1, availableW / preview.preview_width, availableH / preview.preview_height);
+  }, [preview]);
 
-    const nextFitZoom = Math.min(
-      1,
-      availableW / preview.preview_width,
-      availableH / preview.preview_height
-    );
-
+  useEffect(() => {
+    const nextFitZoom = calculateFitZoom();
+    if (nextFitZoom == null) return;
     setFitZoom(nextFitZoom);
     setZoom(nextFitZoom);
-  }, [preview]);
+  }, [preview, calculateFitZoom]);
+
+  useEffect(() => {
+    if (!editorViewportRef.current) return;
+    const el = editorViewportRef.current;
+    const ro = new ResizeObserver(() => {
+      const nextFitZoom = calculateFitZoom();
+      if (nextFitZoom == null) return;
+      setFitZoom(nextFitZoom);
+      // 只有当前 zoom 接近旧 fitZoom 时才同步更新，避免覆盖用户手动缩放
+      setZoom((prevZoom) => {
+        const threshold = 0.05;
+        const wasNearFit =
+          Math.abs(prevZoom - fitZoomRef.current) / Math.max(fitZoomRef.current, 0.001) < threshold;
+        return wasNearFit ? nextFitZoom : prevZoom;
+      });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [calculateFitZoom]);
 
   const clampZoom = (value: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 

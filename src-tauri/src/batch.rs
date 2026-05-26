@@ -32,6 +32,7 @@ fn run_batch_from_json_blocking(
     handle: &AppHandle,
     job_id: &str,
     cancel_flag: &AtomicBool,
+    records_lock: &std::sync::Mutex<()>,
 ) -> Result<BatchResult, String> {
     let text = fs::read_to_string(json_path).map_err(|e| format!("读取 JSON 失败: {}", e))?;
     let records: Vec<CropRecord> =
@@ -40,10 +41,10 @@ fn run_batch_from_json_blocking(
         return Err("批量导入记录数超过 10000 条上限".into());
     }
 
-    let mut existing_records = read_crops(source_dir)?;
     let total = records.len();
     let mut success = 0usize;
     let mut failures = Vec::new();
+    let mut new_records: Vec<CropRecord> = Vec::new();
     let mut successful_relative_paths: HashSet<String> = HashSet::new();
 
     let _ = handle.emit(
@@ -110,7 +111,7 @@ fn run_batch_from_json_blocking(
                 new_record.rating = record.rating.min(3);
                 success += 1;
                 successful_relative_paths.insert(new_record.relative_path.clone());
-                existing_records.push(new_record);
+                new_records.push(new_record);
             }
             Err(e) => failures.push(BatchFailure {
                 source_path: record.source_path,
@@ -130,15 +131,34 @@ fn run_batch_from_json_blocking(
         );
     }
 
-    write_crops(source_dir, &existing_records)?;
+    // 锁内：重新读取现有记录，追加新记录，并清理 skipped
+    {
+        let _guard = records_lock.lock().map_err(|e| format!("记录锁错误: {}", e))?;
+        let mut current_records = read_crops(source_dir)?;
+        for r in &new_records {
+            current_records.push(r.clone());
+        }
+        if let Err(e) = write_crops(source_dir, &current_records) {
+            drop(_guard);
+            for r in &new_records {
+                if let Err(del_e) = fs::remove_file(&r.output_path) {
+                    eprintln!(
+                        "批量导入写 JSON 失败后清理孤儿裁剪图失败: {} - {}",
+                        r.output_path, del_e
+                    );
+                }
+            }
+            return Err(e);
+        }
 
-    if !successful_relative_paths.is_empty() {
-        let mut skipped = read_skipped(source_dir)?;
-        let skipped_before = skipped.len();
-        skipped.retain(|r| !successful_relative_paths.contains(&r.relative_path));
-        if skipped.len() != skipped_before {
-            if let Err(e) = write_skipped(source_dir, &skipped) {
-                eprintln!("批量裁剪成功，但清除跳过记录失败: {}", e);
+        if !successful_relative_paths.is_empty() {
+            let mut skipped = read_skipped(source_dir)?;
+            let skipped_before = skipped.len();
+            skipped.retain(|r| !successful_relative_paths.contains(&r.relative_path));
+            if skipped.len() != skipped_before {
+                if let Err(e) = write_skipped(source_dir, &skipped) {
+                    eprintln!("批量裁剪成功，但清除跳过记录失败: {}", e);
+                }
             }
         }
     }
@@ -211,6 +231,7 @@ pub(crate) async fn run_batch_from_json(
     let handle_clone = handle.clone();
     let job_id_clone = job_id.clone();
     let cancel_flag_clone = cancel_flag.clone();
+    let records_lock = state.records_lock.clone();
 
     let result = tauri::async_runtime::spawn_blocking(move || {
         run_batch_from_json_blocking(
@@ -220,6 +241,7 @@ pub(crate) async fn run_batch_from_json(
             &handle_clone,
             &job_id_clone,
             &cancel_flag_clone,
+            &records_lock,
         )
     })
     .await

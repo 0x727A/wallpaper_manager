@@ -101,16 +101,19 @@ export const pickJsonFile = (): Promise<string | null> =>
 export const ensureThumbnail = (sourcePath: string): Promise<string> =>
   invoke('ensure_thumbnail', { sourcePath });
 
-export interface PreviewImage {
-  data_url: string;
+export interface ResolvedPreview {
+  src_path: string;
+  src_url: string;
   original_width: number;
   original_height: number;
   preview_width: number;
   preview_height: number;
 }
 
-export const readPreviewImage = (sourcePath: string): Promise<PreviewImage> =>
-  invoke('read_preview_image', { sourcePath });
+export const resolvePreviewImage = async (sourcePath: string): Promise<ResolvedPreview> => {
+  const res: Omit<ResolvedPreview, 'src_url'> = await invoke('resolve_preview_image', { sourcePath });
+  return { ...res, src_url: convertFileSrc(res.src_path) };
+};
 
 export const saveCrop = (request: SaveCropRequest): Promise<CropRecord> =>
   invoke('save_crop', { request });
@@ -133,9 +136,6 @@ export const deleteCropRecord = (outputPath: string): Promise<CropRecord> =>
 export const resolveCroppedImagePath = (outputPath: string): Promise<string> =>
   invoke('resolve_cropped_image_path', { outputPath });
 
-export const ensureCroppedThumbnail = (outputPath: string): Promise<string> =>
-  invoke('ensure_cropped_thumbnail', { outputPath });
-
 export const ensureCroppedThumbnails = (outputPaths: string[]): Promise<Record<string, string>> =>
   invoke('ensure_cropped_thumbnails', { outputPaths });
 
@@ -150,7 +150,12 @@ export interface SaveRecropRequest {
   crop: SaveCropRequest;
 }
 
-export const saveRecrop = (request: SaveRecropRequest): Promise<CropRecord> =>
+export interface SaveRecropResult {
+  record: CropRecord;
+  warning?: string;
+}
+
+export const saveRecrop = (request: SaveRecropRequest): Promise<SaveRecropResult> =>
   invoke('save_recrop', { request });
 
 export const readSkipRecords = (): Promise<SkipRecord[]> =>
