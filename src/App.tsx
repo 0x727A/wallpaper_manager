@@ -24,6 +24,7 @@ import {
   pickSourceDir,
   setSourceDir,
 } from './api';
+import { preloadPreview } from './utils/previewCache';
 
 function groupBySourcePath(records: CropRecord[]): Record<string, CropRecord[]> {
   const map: Record<string, CropRecord[]> = {};
@@ -35,13 +36,13 @@ function groupBySourcePath(records: CropRecord[]): Record<string, CropRecord[]> 
 }
 
 function getResumeImages(
-  images: ImageEntry[],
+  allImages: ImageEntry[],
   records: CropRecord[],
   skipMap: Record<string, SkipRecord> = {},
 ) {
   const cropped = new Set(records.map((r) => r.relative_path));
   const skipped = new Set(Object.values(skipMap).map((r) => r.relative_path));
-  const pending = images.filter((img) => !cropped.has(img.relative_path) && !skipped.has(img.relative_path));
+  const pending = allImages.filter((img) => !cropped.has(img.relative_path) && !skipped.has(img.relative_path));
 
   if (pending.length === 0) {
     return { pending, selectedIndex: -1 };
@@ -52,12 +53,12 @@ function getResumeImages(
     return { pending, selectedIndex: 0 };
   }
 
-  const lastFullIndex = images.findIndex((img) => img.relative_path === last.relative_path);
+  const lastFullIndex = allImages.findIndex((img) => img.relative_path === last.relative_path);
 
   if (lastFullIndex >= 0) {
-    for (let i = lastFullIndex + 1; i < images.length; i++) {
-      if (!cropped.has(images[i].relative_path) && !skipped.has(images[i].relative_path)) {
-        const pendingIndex = pending.findIndex((img) => img.relative_path === images[i].relative_path);
+    for (let i = lastFullIndex + 1; i < allImages.length; i++) {
+      if (!cropped.has(allImages[i].relative_path) && !skipped.has(allImages[i].relative_path)) {
+        const pendingIndex = pending.findIndex((img) => img.relative_path === allImages[i].relative_path);
         return { pending, selectedIndex: pendingIndex >= 0 ? pendingIndex : 0 };
       }
     }
@@ -66,19 +67,86 @@ function getResumeImages(
   return { pending, selectedIndex: 0 };
 }
 
+function filterImages(
+  all: ImageEntry[],
+  records: Record<string, CropRecord[]>,
+  skipMap: Record<string, SkipRecord>,
+  filter: StatusFilter
+): ImageEntry[] {
+  const croppedRel = new Set(Object.values(records).flat().map((r) => r.relative_path));
+  const skippedRel = new Set(Object.values(skipMap).map((r) => r.relative_path));
+  const isCropped = (img: ImageEntry) => croppedRel.has(img.relative_path);
+  const isSkipped = (img: ImageEntry) => skippedRel.has(img.relative_path);
+  if (filter === 'all') return all;
+  if (filter === 'cropped') return all.filter(isCropped);
+  if (filter === 'skipped') return all.filter(isSkipped);
+  if (filter === 'uncropped') return all.filter((img) => !isCropped(img) && !isSkipped(img));
+  return all;
+}
+
+function computeVisibleImages(
+  all: ImageEntry[],
+  records: Record<string, CropRecord[]>,
+  skipMap: Record<string, SkipRecord>,
+  filter: StatusFilter,
+  search: string,
+  category: string,
+  lock: { sourcePath: string; index: number } | null
+): ImageEntry[] {
+  let list = filterImages(all, records, skipMap, filter);
+  if (search.trim()) {
+    const q = search.toLowerCase();
+    list = list.filter(
+      (i) =>
+        i.filename.toLowerCase().includes(q) ||
+        i.relative_path.toLowerCase().includes(q)
+    );
+  }
+  if (category !== 'all') {
+    list = list.filter((i) => i.relative_path.startsWith(category + '/'));
+  }
+  if (lock && filter === 'uncropped') {
+    const locked = list.find((img) => img.source_path === lock.sourcePath);
+    if (!locked) {
+      const fromAll = all.find((img) => img.source_path === lock.sourcePath);
+      if (fromAll) {
+        const insertAt = Math.min(lock.index, list.length);
+        list = [...list.slice(0, insertAt), fromAll, ...list.slice(insertAt)];
+      }
+    }
+  }
+  return list;
+}
+
 export default function App() {
-  const [images, setImages] = useState<ImageEntry[]>([]);
   const [allImages, setAllImages] = useState<ImageEntry[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [settings, setSettings] = useState<Settings>({ source_dir: '', output_dir: '' });
   const [includeNsfw, setIncludeNsfw] = useState(false);
   const [showCropped, setShowCropped] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('uncropped');
+  const [search, setSearch] = useState('');
+  const [category, setCategory] = useState('all');
   const [croppedGalleryOpen, setCroppedGalleryOpen] = useState(false);
   const [cropRecords, setCropRecords] = useState<Record<string, CropRecord[]>>({});
   const [skipRecords, setSkipRecords] = useState<Record<string, SkipRecord>>({});
   const [loading, setLoading] = useState(false);
+  const [continueCropLock, setContinueCropLock] = useState<{ sourcePath: string; index: number } | null>(null);
   const flatCropRecords = useMemo(() => Object.values(cropRecords).flat(), [cropRecords]);
+
+  const images = useMemo(
+    () => computeVisibleImages(allImages, cropRecords, skipRecords, statusFilter, search, category, continueCropLock),
+    [allImages, cropRecords, skipRecords, statusFilter, search, category, continueCropLock]
+  );
+
+  const categories = useMemo(() => {
+    const set = new Set<string>();
+    for (const img of allImages) {
+      const first = img.relative_path.split('/')[0];
+      if (first) set.add(first);
+    }
+    return Array.from(set).sort();
+  }, [allImages]);
 
   const [recropTarget, setRecropTarget] = useState<CropRecord | null>(null);
   const [recropCompare, setRecropCompare] = useState<{
@@ -86,11 +154,8 @@ export default function App() {
     preview: CropPreview;
     cropRequest: SaveCropRequest;
   } | null>(null);
-  const [preRecropSelection, setPreRecropSelection] = useState<{
-    image: ImageEntry | null;
-    index: number;
-    insertedForRecrop: boolean;
-  } | null>(null);
+  const [recropImage, setRecropImage] = useState<ImageEntry | null>(null);
+  const [preRecropCategory, setPreRecropCategory] = useState<string>('all');
   const RATIO_MODES = ['free', '16:9', '16:10', '4:3', '1:1', '3:2', '2:3', '21:9'];
   const [lastRatioMode, setLastRatioMode] = useState(() => {
     const stored = localStorage.getItem('lastRatioMode');
@@ -124,31 +189,12 @@ export default function App() {
     return map;
   }, []);
 
-  const filterImages = useCallback((all: ImageEntry[], records: Record<string, CropRecord[]>, skipMap: Record<string, SkipRecord>, filter: StatusFilter) => {
-    const croppedRel = new Set(Object.values(records).flat().map((r) => r.relative_path));
-    const skippedRel = new Set(Object.values(skipMap).map((r) => r.relative_path));
-    const isCropped = (img: ImageEntry) => croppedRel.has(img.relative_path);
-    const isSkipped = (img: ImageEntry) => skippedRel.has(img.relative_path);
-    if (filter === 'all') return all;
-    if (filter === 'cropped') return all.filter(isCropped);
-    if (filter === 'skipped') return all.filter(isSkipped);
-    if (filter === 'uncropped') return all.filter((img) => !isCropped(img) && !isSkipped(img));
-    return all;
-  }, []);
-
-  const applyVisibility = useCallback((all: ImageEntry[], records: Record<string, CropRecord[]>, skipMap: Record<string, SkipRecord>, filter: StatusFilter) => {
-    const list = filterImages(all, records, skipMap, filter);
-    setImages(list);
-    setSelectedIndex(list.length > 0 ? 0 : -1);
-  }, [filterImages]);
-
   const handleImportComplete = useCallback(async () => {
     const records = await readCropRecords();
     const skipMap = await loadSkipRecords();
-    const grouped = groupBySourcePath(records);
-    setCropRecords(grouped);
-    applyVisibility(allImages, grouped, skipMap, statusFilter);
-  }, [allImages, applyVisibility, statusFilter]);
+    setCropRecords(groupBySourcePath(records));
+    setSkipRecords(skipMap);
+  }, [loadSkipRecords]);
 
   const performScan = useCallback(async (s: Settings) => {
     setLoading(true);
@@ -162,29 +208,28 @@ export default function App() {
       const grouped = groupBySourcePath(records);
       setCropRecords(grouped);
       setAllImages(imgs);
+      setSkipRecords(skipMap);
+      setContinueCropLock(null);
 
       const { pending, selectedIndex: resumeIdx } = getResumeImages(imgs, records, skipMap);
 
-      if (statusFilter === 'all') {
-        setImages(imgs);
+      const visible = computeVisibleImages(imgs, grouped, skipMap, statusFilter, search, category, continueCropLock);
+
+      if (statusFilter === 'uncropped') {
         if (resumeIdx >= 0 && pending[resumeIdx]) {
-          const fullIdx = imgs.findIndex((i) => i.relative_path === pending[resumeIdx].relative_path);
-          setSelectedIndex(fullIdx >= 0 ? fullIdx : 0);
+          const targetRel = pending[resumeIdx].relative_path;
+          const idx = visible.findIndex((i) => i.relative_path === targetRel);
+          setSelectedIndex(idx >= 0 ? idx : (visible.length > 0 ? 0 : -1));
         } else {
-          setSelectedIndex(imgs.length > 0 ? 0 : -1);
+          setSelectedIndex(visible.length > 0 ? 0 : -1);
         }
-      } else if (statusFilter === 'uncropped') {
-        setImages(pending);
-        setSelectedIndex(resumeIdx);
       } else {
-        const list = filterImages(imgs, grouped, skipMap, statusFilter);
-        setImages(list);
-        setSelectedIndex(list.length > 0 ? 0 : -1);
+        setSelectedIndex(visible.length > 0 ? 0 : -1);
       }
     } finally {
       setLoading(false);
     }
-  }, [includeNsfw, statusFilter, filterImages]);
+  }, [includeNsfw, statusFilter, search, category, loadSkipRecords]);
 
   const handleScan = useCallback(() => {
     performScan(settings);
@@ -194,37 +239,69 @@ export default function App() {
     setSettings(s);
     const sourceChanged = s.source_dir !== settings.source_dir;
     if (sourceChanged) {
-      setImages([]);
       setAllImages([]);
       setSelectedIndex(-1);
       setCropRecords({});
       setSkipRecords({});
+      setSearch('');
+      setCategory('all');
+      setContinueCropLock(null);
     }
   }, [settings.source_dir]);
 
+  function exitRecropMode() {
+    setRecropImage(null);
+    setRecropTarget(null);
+    setRecropCompare(null);
+  }
+
   const handleSelect = useCallback((index: number) => {
+    setContinueCropLock(null);
+    exitRecropMode();
     setSelectedIndex(index);
   }, []);
 
-  const advanceAfterCompletedCrop = useCallback((record: CropRecord) => {
-    if (statusFilter === 'all' || statusFilter === 'cropped') {
-      setImages((prev) => {
-        setSelectedIndex((i) => Math.min(Math.max(0, prev.length - 1), i + 1));
-        return prev;
-      });
-    } else {
-      setImages((prev) => {
-        const idx = prev.findIndex((img) => img.source_path === record.source_path || img.relative_path === record.relative_path);
-        const next = prev.filter((img) => img.source_path !== record.source_path && img.relative_path !== record.relative_path);
-        setSelectedIndex(() => {
-          if (next.length === 0) return -1;
-          if (idx < 0) return Math.min(selectedIndex, next.length - 1);
-          return Math.min(idx, next.length - 1);
-        });
-        return next;
-      });
+  function getNextStateAfterSave(
+    currentImages: ImageEntry[],
+    record: CropRecord,
+    currentSelectedIndex: number,
+    filter: StatusFilter
+  ): { images: ImageEntry[]; selectedIndex: number } {
+    if (currentImages.length === 0) {
+      return { images: [], selectedIndex: -1 };
     }
-  }, [selectedIndex, statusFilter, images.length]);
+
+    const idx = currentImages.findIndex(
+      (img) =>
+        img.source_path === record.source_path ||
+        img.relative_path === record.relative_path
+    );
+    const fallbackIdx =
+      idx >= 0
+        ? idx
+        : Math.min(Math.max(0, currentSelectedIndex), currentImages.length - 1);
+
+    if (filter === 'uncropped') {
+      const nextImages = currentImages.filter(
+        (img) =>
+          img.source_path !== record.source_path &&
+          img.relative_path !== record.relative_path
+      );
+      if (nextImages.length === 0) {
+        return { images: [], selectedIndex: -1 };
+      }
+      const nextIndex =
+        fallbackIdx < nextImages.length ? fallbackIdx : nextImages.length - 1;
+      return { images: nextImages, selectedIndex: nextIndex };
+    }
+
+    // all / cropped / skipped：不改列表，优先下一张，末尾回退
+    const nextIndex =
+      fallbackIdx + 1 < currentImages.length
+        ? fallbackIdx + 1
+        : Math.max(0, fallbackIdx - 1);
+    return { images: currentImages, selectedIndex: nextIndex };
+  }
 
   const addCropRecord = useCallback((record: CropRecord) => {
     setCropRecords((prev) => {
@@ -244,28 +321,25 @@ export default function App() {
   }, []);
 
   const handleSaveCrop = useCallback((record: CropRecord) => {
+    setContinueCropLock(null);
     addCropRecord(record);
-    advanceAfterCompletedCrop(record);
-  }, [addCropRecord, advanceAfterCompletedCrop]);
+    const { selectedIndex: nextIdx } = getNextStateAfterSave(
+      images,
+      record,
+      selectedIndex,
+      statusFilter
+    );
+    setSelectedIndex(nextIdx);
+  }, [addCropRecord, images, selectedIndex, statusFilter]);
 
   const handleSaveAndContinueCrop = useCallback((record: CropRecord) => {
     addCropRecord(record);
-  }, [addCropRecord]);
+    setContinueCropLock({ sourcePath: record.source_path, index: selectedIndex });
+  }, [addCropRecord, selectedIndex]);
 
   const handleDeleteImage = useCallback((sourcePath: string) => {
+    setContinueCropLock(null);
     setAllImages((prev) => prev.filter((i) => i.source_path !== sourcePath));
-    setImages((prev) => {
-      const idx = prev.findIndex((i) => i.source_path === sourcePath);
-      const next = prev.filter((i) => i.source_path !== sourcePath);
-      if (next.length === 0) {
-        setSelectedIndex(-1);
-      } else if (idx >= next.length) {
-        setSelectedIndex(next.length - 1);
-      } else {
-        setSelectedIndex(idx);
-      }
-      return next;
-    });
     setCropRecords((prev) => {
       const next = { ...prev };
       delete next[sourcePath];
@@ -276,6 +350,7 @@ export default function App() {
       delete next[sourcePath];
       return next;
     });
+    // images auto-updates via useMemo, selectedIndex corrected by effect
   }, []);
 
   const handleDeleteCropRecord = useCallback((deleted: CropRecord) => {
@@ -290,40 +365,54 @@ export default function App() {
             getFilename(r.output_path) === getFilename(deleted.output_path)
           )
       );
-      const nextGrouped = groupBySourcePath(nextFlat);
-      applyVisibility(allImages, nextGrouped, skipRecords, statusFilter);
-      return nextGrouped;
+      return groupBySourcePath(nextFlat);
     });
-  }, [allImages, skipRecords, statusFilter, applyVisibility]);
+    // images auto-updates, selectedIndex corrected by effect
+  }, []);
 
-  const selectedImage = selectedIndex >= 0 ? images[selectedIndex] : null;
+  const gridSelectedImage = selectedIndex >= 0 ? images[selectedIndex] : null;
+  const selectedImage = recropImage ?? gridSelectedImage;
+
+  useEffect(() => {
+    if (selectedIndex < 0) return;
+
+    const next = images[selectedIndex + 1];
+    if (next) preloadPreview(next.source_path);
+
+    const prev = images[selectedIndex - 1];
+    if (prev) preloadPreview(prev.source_path);
+  }, [images, selectedIndex]);
+
+  useEffect(() => {
+    if (images.length === 0) {
+      setSelectedIndex(-1);
+    } else if (selectedIndex < 0) {
+      setSelectedIndex(0);
+    } else if (selectedIndex >= images.length) {
+      setSelectedIndex(images.length - 1);
+    }
+  }, [images.length, selectedIndex]);
+
+  useEffect(() => {
+    setContinueCropLock(null);
+  }, [statusFilter, search, category]);
 
   const startRecrop = useCallback(async (record: CropRecord) => {
     try {
       const entry = await resolveOriginalForRecord(record);
-      const existsInImages = images.some((i) => i.relative_path === entry.relative_path);
-      setPreRecropSelection({
-        image: selectedImage,
-        index: selectedIndex,
-        insertedForRecrop: !existsInImages,
-      });
+      const entryCategory = entry.relative_path.split('/')[0] || 'all';
+      setPreRecropCategory(entryCategory);
       setAllImages((prev) => {
         const exists = prev.some((i) => i.relative_path === entry.relative_path);
         return exists ? prev : [...prev, entry];
       });
-      setImages((prev) => {
-        const exists = prev.some((i) => i.relative_path === entry.relative_path);
-        const next = exists ? prev : [...prev, entry];
-        const idx = next.findIndex((i) => i.relative_path === entry.relative_path);
-        setSelectedIndex(idx >= 0 ? idx : 0);
-        return next;
-      });
+      setRecropImage(entry);
       setRecropTarget(record);
       setCroppedGalleryOpen(false);
     } catch (e: any) {
       alert(String(e?.message || e));
     }
-  }, [selectedImage, selectedIndex, images]);
+  }, []);
 
   const handlePreviewRecrop = useCallback(async (request: SaveCropRequest) => {
     if (!recropTarget) return;
@@ -339,62 +428,45 @@ export default function App() {
     }
   }, [recropTarget]);
 
-  const advanceAfterCompletedRecrop = useCallback((record: CropRecord) => {
-    if (!preRecropSelection) return;
-
-    if (preRecropSelection.insertedForRecrop) {
-      // 临时插入的图，只从当前 images 移除，allImages 不动
-      setImages((prev) => {
-        const idx = prev.findIndex((i) => i.relative_path === record.relative_path);
-        const next = prev.filter((i) => i.relative_path !== record.relative_path);
-        if (next.length === 0) {
-          setSelectedIndex(-1);
-        } else {
-          setSelectedIndex(
-            idx >= 0
-              ? Math.min(idx, next.length - 1)
-              : Math.min(preRecropSelection.index, next.length - 1)
-          );
-        }
-        return next;
-      });
-    } else {
-      // 本来就在列表中，idx + 1；末尾就选上一张
-      setImages((prev) => {
-        const idx = prev.findIndex((i) => i.relative_path === record.relative_path);
-        const nextIdx =
-          idx >= 0 && idx + 1 < prev.length ? idx + 1 : Math.max(0, idx - 1);
-        setSelectedIndex(prev.length > 0 ? nextIdx : -1);
-        return prev;
-      });
-    }
-  }, [preRecropSelection]);
-
-  const handleConfirmRecrop = useCallback(async () => {
-    if (!recropCompare) return;
+  const handleConfirmRecrop = useCallback(async (request: SaveCropRequest) => {
+    if (!recropTarget) return;
     try {
-      const newRecord = await saveRecrop({
-        old_output_path: recropCompare.oldRecord.output_path,
-        crop: recropCompare.cropRequest,
+      await saveRecrop({
+        old_output_path: recropTarget.output_path,
+        crop: request,
       });
-      setCropRecords((prev) => {
-        const flat = Object.values(prev).flat();
-        const nextFlat = flat.map((r) =>
-          r.output_path === recropCompare!.oldRecord.output_path ? newRecord : r
-        );
-        return groupBySourcePath(nextFlat);
-      });
-      advanceAfterCompletedRecrop(newRecord);
+      const records = await readCropRecords();
+      const nextGrouped = groupBySourcePath(records);
+      setCropRecords(nextGrouped);
+
+      setRecropImage(null);
+      setStatusFilter('uncropped');
+      setShowCropped(false);
+      setSearch('');
+      setContinueCropLock(null);
+      setCategory(preRecropCategory);
+
+      const nextImages = computeVisibleImages(
+        allImages,
+        nextGrouped,
+        skipRecords,
+        'uncropped',
+        '',
+        preRecropCategory,
+        null
+      );
+      setSelectedIndex(nextImages.length > 0 ? 0 : -1);
+
       setRecropTarget(null);
       setRecropCompare(null);
-      setPreRecropSelection(null);
     } catch (e: any) {
       alert('保存失败: ' + (e?.message || String(e)));
     }
-  }, [recropCompare, advanceAfterCompletedRecrop]);
+  }, [recropTarget, allImages, skipRecords, preRecropCategory]);
 
   const handleSkipImage = useCallback(async () => {
     if (!selectedImage) return;
+    setContinueCropLock(null);
     const skippedSourcePath = selectedImage.source_path;
     const skippedRelativePath = selectedImage.relative_path;
     const record = await skipImage(skippedSourcePath);
@@ -403,57 +475,30 @@ export default function App() {
       [record.source_path]: record,
       [skippedSourcePath]: record,
     }));
-    setImages((prev) => {
-      const idx = prev.findIndex((img) =>
-        img.source_path === skippedSourcePath ||
-        img.source_path === record.source_path ||
-        img.relative_path === skippedRelativePath
-      );
-      const next = prev.filter((img) =>
-        img.source_path !== skippedSourcePath &&
-        img.source_path !== record.source_path &&
-        img.relative_path !== skippedRelativePath
-      );
-      setSelectedIndex(() => {
-        if (next.length === 0) return -1;
-        return Math.min(idx, next.length - 1);
-      });
-      return next;
-    });
-  }, [selectedImage]);
+    // Compute next images to check if selectedIndex needs adjustment
+    const nextSkipRecords = {
+      ...skipRecords,
+      [record.source_path]: record,
+      [skippedSourcePath]: record,
+    };
+    const nextImages = computeVisibleImages(
+      allImages,
+      cropRecords,
+      nextSkipRecords,
+      statusFilter,
+      search,
+      category,
+      null
+    );
+    if (selectedIndex >= nextImages.length) {
+      setSelectedIndex(nextImages.length > 0 ? nextImages.length - 1 : -1);
+    }
+  }, [selectedImage, selectedIndex, allImages, cropRecords, skipRecords, statusFilter, search, category]);
 
   const handleCancelRecrop = useCallback(() => {
-    const previous = preRecropSelection;
-    const target = recropTarget;
-
-    setRecropTarget(null);
-    setRecropCompare(null);
-    setPreRecropSelection(null);
+    exitRecropMode();
     setCroppedGalleryOpen(true);
-
-    setImages((prev) => {
-      let next = prev;
-
-      if (statusFilter === 'uncropped' && target) {
-        next = prev.filter((img) => img.relative_path !== target.relative_path);
-      }
-
-      if (!previous?.image) {
-        setSelectedIndex(-1);
-      } else {
-        const foundIdx = next.findIndex((img) => img.relative_path === previous.image!.relative_path);
-        if (foundIdx >= 0) {
-          setSelectedIndex(foundIdx);
-        } else if (next.length > 0) {
-          setSelectedIndex(Math.min(previous.index, next.length - 1));
-        } else {
-          setSelectedIndex(-1);
-        }
-      }
-
-      return next;
-    });
-  }, [preRecropSelection, recropTarget, statusFilter]);
+  }, []);
 
   return (
     <div className="app-shell">
@@ -467,7 +512,6 @@ export default function App() {
           const newFilter = v ? 'all' : 'uncropped';
           setShowCropped(v);
           setStatusFilter(newFilter);
-          applyVisibility(allImages, cropRecords, skipRecords, newFilter);
         }}
         onScan={handleScan}
         loading={loading}
@@ -489,8 +533,12 @@ export default function App() {
               if (showCropped !== newShowCropped) {
                 setShowCropped(newShowCropped);
               }
-              applyVisibility(allImages, cropRecords, skipRecords, filter);
             }}
+            search={search}
+            onSearchChange={setSearch}
+            category={category}
+            onCategoryChange={setCategory}
+            categories={categories}
           />
         </div>
         <div className="editor">
@@ -502,14 +550,23 @@ export default function App() {
               onSaveAndContinue={handleSaveAndContinueCrop}
               onDelete={handleDeleteImage}
               onSkipImage={handleSkipImage}
-              onPrev={() => setSelectedIndex((i) => Math.max(0, i - 1))}
-              onNext={() => setSelectedIndex((i) => Math.min(images.length - 1, i + 1))}
+              onPrev={() => {
+                setContinueCropLock(null);
+                exitRecropMode();
+                setSelectedIndex((i) => Math.max(0, i - 1));
+              }}
+              onNext={() => {
+                setContinueCropLock(null);
+                exitRecropMode();
+                setSelectedIndex((i) => Math.min(images.length - 1, i + 1));
+              }}
               settings={settings}
               ratioMode={lastRatioMode}
               onRatioModeChange={handleRatioModeChange}
               recropTarget={recropTarget}
               onPreviewRecrop={handlePreviewRecrop}
               onCancelRecrop={handleCancelRecrop}
+              onConfirmRecrop={handleConfirmRecrop}
             />
           ) : settings.source_dir ? (
             <div className="empty-state">
@@ -549,7 +606,7 @@ export default function App() {
         <RecropCompareModal
           oldRecord={recropCompare.oldRecord}
           preview={recropCompare.preview}
-          onConfirm={handleConfirmRecrop}
+          onConfirm={() => handleConfirmRecrop(recropCompare.cropRequest)}
           onAdjust={() => setRecropCompare(null)}
           onCancel={handleCancelRecrop}
         />

@@ -93,7 +93,9 @@ pub(crate) fn create_crop_file(
                 *pixel = image::Rgba([0, 0, 0, 255]);
             }
         }
-        rgba.save(&out_path)
+        image::DynamicImage::ImageRgba8(rgba)
+            .to_rgb8()
+            .save(&out_path)
             .map_err(|e| format!("保存遮罩图失败: {}", e))?;
     } else {
         let cropped = img.crop_imm(x, y, width, height);

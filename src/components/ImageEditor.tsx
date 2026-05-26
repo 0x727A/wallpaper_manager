@@ -6,9 +6,9 @@ import {
   SaveCropRequest,
   saveCrop,
   deleteOriginalImage,
-  readPreviewImage,
   PreviewImage,
 } from '../api';
+import { getCachedPreview, loadPreview } from '../utils/previewCache';
 import { ImageEditorToolbar } from './image-editor/ImageEditorToolbar';
 import { CropCanvas } from './image-editor/CropCanvas';
 import { ImageEditorInspector } from './image-editor/ImageEditorInspector';
@@ -29,6 +29,7 @@ interface Props {
   recropTarget?: CropRecord | null;
   onPreviewRecrop?: (request: SaveCropRequest) => void;
   onCancelRecrop?: () => void;
+  onConfirmRecrop?: (request: SaveCropRequest) => void;
   onSkipImage?: () => void;
 }
 
@@ -47,6 +48,7 @@ export function ImageEditor({
   recropTarget,
   onPreviewRecrop,
   onCancelRecrop,
+  onConfirmRecrop,
 }: Props) {
   const [crop, setCrop] = useState<PercentCrop>();
   const [completedCrop, setCompletedCrop] = useState<PercentCrop>();
@@ -71,22 +73,36 @@ export function ImageEditor({
 
   useEffect(() => {
     let cancelled = false;
-    setPreview(null);
+    const cached = getCachedPreview(image.source_path);
+
     setCrop(undefined);
     setCompletedCrop(undefined);
     setCropName('');
-    readPreviewImage(image.source_path)
-      .then((p) => {
-        if (cancelled) return;
-        setPreview(p);
-      })
-      .catch((err) => {
-        console.error('readPreviewImage failed', err);
-        if (!cancelled) setPreview(null);
-      });
+
+    if (cached) {
+      setPreview(cached);
+      // 缓存命中时直接初始化裁剪框，避免 preview 引用相同导致 effect 不触发
+      const aspect = RATIOS.find((r) => r.value === ratioMode)?.aspect;
+      if (!isRecropActive) {
+        initCrop(cached.original_width, cached.original_height, aspect);
+      }
+    } else {
+      setPreview(null);
+      loadPreview(image.source_path)
+        .then((p) => {
+          if (cancelled) return;
+          setPreview(p);
+        })
+        .catch((err) => {
+          console.error('readPreviewImage failed', err);
+          if (!cancelled) setPreview(null);
+        });
+    }
+
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [image.source_path]);
 
   useEffect(() => {
@@ -314,6 +330,12 @@ export function ImageEditor({
     onPreviewRecrop?.(req);
   };
 
+  const handleConfirmRecrop = () => {
+    const req = buildCropRequest();
+    if (!req) return;
+    onConfirmRecrop?.(req);
+  };
+
   const handleDelete = async () => {
     if (!confirm(`确定要删除原图吗？\n${image.filename}\n(将移动到 _deleted 目录)`)) return;
     try {
@@ -351,6 +373,7 @@ export function ImageEditor({
           zoom={zoom}
           onWheelZoom={handleWheelZoom}
           editorViewportRef={editorViewportRef}
+          outputMode={outputMode}
         />
 
         <ImageEditorInspector
@@ -373,6 +396,7 @@ export function ImageEditor({
           saving={saving}
           onPreviewRecrop={handlePreviewRecrop}
           onCancelRecrop={onCancelRecrop}
+          onConfirmRecrop={handleConfirmRecrop}
           onSave={handleSave}
           onSaveAndContinue={onSaveAndContinue ? handleSaveAndContinue : undefined}
           onSkipImage={onSkipImage}

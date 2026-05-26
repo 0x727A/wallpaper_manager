@@ -163,7 +163,7 @@ pub(crate) async fn read_preview_image(
         let rgb = preview.to_rgb8();
         let mut buffer: Vec<u8> = Vec::new();
         let mut cursor = std::io::Cursor::new(&mut buffer);
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 90);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 75);
         encoder
             .write_image(
                 rgb.as_raw(),

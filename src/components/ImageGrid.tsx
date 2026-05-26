@@ -12,16 +12,32 @@ interface Props {
   onSelect: (index: number) => void;
   statusFilter: StatusFilter;
   onStatusFilterChange: (filter: StatusFilter) => void;
+  search: string;
+  onSearchChange: (value: string) => void;
+  category: string;
+  onCategoryChange: (value: string) => void;
+  categories: string[];
 }
 
 const PAGE_SIZE = 40;
 const CONCURRENCY = 2;
 
-export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onSelect, statusFilter, onStatusFilterChange }: Props) {
+export function ImageGrid({
+  images,
+  selectedIndex,
+  cropRecords,
+  skipRecords,
+  onSelect,
+  statusFilter,
+  onStatusFilterChange,
+  search,
+  onSearchChange,
+  category,
+  onCategoryChange,
+  categories,
+}: Props) {
   const [thumbPaths, setThumbPaths] = useState<Record<string, string>>({});
   const [failedThumbs, setFailedThumbs] = useState<Set<string>>(new Set());
-  const [search, setSearch] = useState('');
-  const [category, setCategory] = useState('all');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   const pendingThumbsRef = useRef<Record<string, string>>({});
@@ -52,40 +68,9 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
     }, 50);
   }, []);
 
-  const indexMap = useMemo(() => {
-    const map = new Map<string, number>();
-    images.forEach((img, idx) => map.set(img.source_path, idx));
-    return map;
-  }, [images]);
-
-  const categories = useMemo(() => {
-    const set = new Set<string>();
-    for (const img of images) {
-      const first = img.relative_path.split('/')[0];
-      if (first) set.add(first);
-    }
-    return Array.from(set).sort();
-  }, [images]);
-
-  const filtered = useMemo(() => {
-    let list = images;
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        (i) =>
-          i.filename.toLowerCase().includes(q) ||
-          i.relative_path.toLowerCase().includes(q)
-      );
-    }
-    if (category !== 'all') {
-      list = list.filter((i) => i.relative_path.startsWith(category + '/'));
-    }
-    return list;
-  }, [images, search, category]);
-
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [search, category, images]);
+  }, [images]);
 
   useEffect(() => {
     const validPaths = new Set(images.map((img) => img.source_path));
@@ -116,8 +101,8 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
   );
 
   const visibleImages = useMemo(
-    () => filtered.slice(0, visibleCount),
-    [filtered, visibleCount]
+    () => images.slice(0, visibleCount),
+    [images, visibleCount]
   );
 
   useEffect(() => {
@@ -163,7 +148,6 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
         clearTimeout(flushTimeoutRef.current);
         flushTimeoutRef.current = null;
       }
-      // 立即 flush 残留 pending，避免 in-flight 结果丢失导致重复请求
       const pendingPaths = pendingThumbsRef.current;
       const pendingFailed = pendingFailedRef.current;
       if (Object.keys(pendingPaths).length > 0 || pendingFailed.size > 0) {
@@ -195,7 +179,7 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
           <input
             type="text"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => onSearchChange(e.target.value)}
             placeholder="搜索文件名..."
           />
         </div>
@@ -203,7 +187,7 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
           <select
             className="select"
             value={category}
-            onChange={(e) => setCategory(e.target.value)}
+            onChange={(e) => onCategoryChange(e.target.value)}
             style={{ flex: 1 }}
           >
             <option value="all">全部分类</option>
@@ -224,7 +208,7 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
           </select>
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6, textAlign: 'right' }}>
-          {visibleImages.length} / {filtered.length} / {images.length}
+          {visibleImages.length} / {images.length}
         </div>
       </div>
 
@@ -238,8 +222,8 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
       {/* Grid */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div className="thumb-grid">
-          {visibleImages.map((img) => {
-            const globalIdx = indexMap.get(img.source_path) ?? -1;
+          {visibleImages.map((img, idx) => {
+            const globalIdx = idx;
             const hasCrops = croppedRel.has(img.relative_path);
             const isSkipped = skippedRel.has(img.relative_path);
             const isSelected = globalIdx === selectedIndex;
@@ -283,18 +267,18 @@ export function ImageGrid({ images, selectedIndex, cropRecords, skipRecords, onS
           })}
         </div>
 
-        {visibleImages.length < filtered.length && (
+        {visibleImages.length < images.length && (
           <div style={{ padding: '12px 8px', textAlign: 'center' }}>
             <button
               className="btn"
               onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
             >
-              加载更多 ({filtered.length - visibleImages.length} 剩余)
+              加载更多 ({images.length - visibleImages.length} 剩余)
             </button>
           </div>
         )}
 
-        {filtered.length === 0 && images.length > 0 && (
+        {images.length === 0 && (
           <div className="empty-state" style={{ padding: 40 }}>
             <div>没有匹配的图片</div>
           </div>

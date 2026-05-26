@@ -1,4 +1,4 @@
-import { Save, Trash2, Eye } from 'lucide-react';
+import { Save, Trash2, Eye, Check } from 'lucide-react';
 import { PercentCrop } from 'react-image-crop';
 import { CropRecord } from '../../api';
 import { RATIOS } from './constants';
@@ -24,6 +24,7 @@ interface ImageEditorInspectorProps {
   saving: boolean;
   onPreviewRecrop?: () => void;
   onCancelRecrop?: () => void;
+  onConfirmRecrop?: () => void;
   onSave: () => void;
   onSaveAndContinue?: () => void;
   onSkipImage?: () => void;
@@ -51,6 +52,7 @@ export function ImageEditorInspector({
   saving,
   onPreviewRecrop,
   onCancelRecrop,
+  onConfirmRecrop,
   onSave,
   onSaveAndContinue,
   onSkipImage,
@@ -206,6 +208,15 @@ export function ImageEditorInspector({
       <div className="panel-group">
         {isRecropActive ? (
           <>
+            <button
+              className="btn btn-success"
+              onClick={onConfirmRecrop}
+              disabled={saving || !hasCrop}
+              style={{ width: '100%', marginBottom: 8 }}
+            >
+              <Check size={14} />
+              确定重裁
+            </button>
             <button
               className="btn btn-accent"
               onClick={onPreviewRecrop}
