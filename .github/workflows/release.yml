@@ -66,13 +66,24 @@ jobs:
         with:
           path: release-assets
 
-      - name: Create draft release
+      - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          tag="v${VERSION}"
+          version="${VERSION:-${GITHUB_REF_NAME#v}}"
+          version="${version#v}"
+          if [ -z "$version" ]; then
+            echo "Release version is empty"
+            exit 1
+          fi
+          tag="v${version}"
+
+          if [ "$tag" != "v" ]; then
+            gh release delete "v" --yes || true
+            git push --delete origin "v" || true
+          fi
 
           gh release delete "$tag" --yes || true
           git push --delete origin "$tag" || true
@@ -93,7 +104,6 @@ jobs:
           fi
 
           gh release create "$tag" \
-            --draft \
             --title "$tag" \
             --notes "Wallpaper Manager ${tag}"
 
