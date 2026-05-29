@@ -71,3 +71,38 @@ pub(crate) fn read_skip_records(state: State<AppState>) -> Result<Vec<SkipRecord
         .map_err(|e| format!("锁错误: {}", e))?;
     read_skipped(&settings.source_dir)
 }
+
+#[tauri::command]
+pub(crate) fn set_crop_records_rating(
+    output_paths: Vec<String>,
+    rating: u8,
+    state: State<AppState>,
+) -> Result<Vec<CropRecord>, String> {
+    let (source_dir, records_lock) = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        (settings.source_dir.clone(), state.records_lock.clone())
+    };
+
+    let _guard = records_lock.lock().map_err(|e| format!("记录锁错误: {}", e))?;
+    let mut records = read_crops(&source_dir)?;
+    let rating = rating.min(3);
+    let output_paths: std::collections::HashSet<_> = output_paths.into_iter().collect();
+    let mut found = false;
+
+    for record in &mut records {
+        if output_paths.contains(&record.output_path) {
+            record.rating = rating;
+            found = true;
+        }
+    }
+
+    if !found {
+        return Err("未找到对应裁剪记录".into());
+    }
+
+    write_crops(&source_dir, &records)?;
+    Ok(records)
+}

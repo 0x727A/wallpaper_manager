@@ -161,6 +161,10 @@ export const saveRecrop = (request: SaveRecropRequest): Promise<SaveRecropResult
 export const readSkipRecords = (): Promise<SkipRecord[]> =>
   invoke('read_skip_records');
 
+export const setCropRecordsRating = (outputPaths: string[], rating: number): Promise<CropRecord[]> =>
+  invoke('set_crop_records_rating', { outputPaths, rating });
+
+
 export const skipImage = (sourcePath: string): Promise<SkipRecord> =>
   invoke('skip_image', { sourcePath });
 

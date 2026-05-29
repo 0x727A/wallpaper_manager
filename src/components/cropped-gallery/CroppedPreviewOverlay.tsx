@@ -79,7 +79,7 @@ export function CroppedPreviewOverlay({
         justifyContent: 'center',
         padding: 40,
       }}
-      onClick={onClose}
+      onClick={(e) => e.stopPropagation()}
     >
       {previewPath ? (
         <img

@@ -16,9 +16,11 @@ interface CroppedGalleryGridProps {
   onOpenPreview: (index: number) => void;
   onRecrop?: (record: CropRecord) => void;
   emptyTitle?: string;
+  selectedOutputPaths: Set<string>;
+  onToggleSelect: (outputPath: string) => void;
 }
 
-export function CroppedGalleryGrid({ sorted, thumbs, loadThumb, onOpenPreview, onRecrop, emptyTitle }: CroppedGalleryGridProps) {
+export function CroppedGalleryGrid({ sorted, thumbs, loadThumb, onOpenPreview, onRecrop, emptyTitle, selectedOutputPaths, onToggleSelect }: CroppedGalleryGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [layout, setLayout] = useState({ cols: 3, cardHeight: 282 });
 
@@ -125,6 +127,8 @@ export function CroppedGalleryGrid({ sorted, thumbs, loadThumb, onOpenPreview, o
                     thumb={thumbs[r.output_path]}
                     onOpenPreview={() => onOpenPreview(globalIdx)}
                     onRecrop={onRecrop}
+                    isSelected={selectedOutputPaths.has(r.output_path)}
+                    onToggleSelect={() => onToggleSelect(r.output_path)}
                   />
                 );
               })}

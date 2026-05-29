@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { X } from 'lucide-react';
-import { CropRecord } from '../api';
+import { CropRecord, setCropRecordsRating } from '../api';
 import { useCroppedThumbQueue } from './cropped-gallery/useCroppedThumbQueue';
 import { CroppedGalleryGrid } from './cropped-gallery/CroppedGalleryGrid';
 import { CroppedPreviewOverlay } from './cropped-gallery/CroppedPreviewOverlay';
@@ -11,6 +11,7 @@ interface Props {
   onClose: () => void;
   onRecrop?: (record: CropRecord) => void;
   onDeleteCropRecord?: (deleted: CropRecord) => void;
+  onCropRecordsUpdated?: (records: CropRecord[]) => void;
 }
 
 function getRecordFolder(record: CropRecord): string {
@@ -19,11 +20,13 @@ function getRecordFolder(record: CropRecord): string {
   return first || '__root__';
 }
 
-export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord }: Props) {
+export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord, onCropRecordsUpdated }: Props) {
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [ratingFilter, setRatingFilter] = useState<'all' | 'unrated' | '1' | '2' | '3'>('all');
   const [outputModeFilter, setOutputModeFilter] = useState<'all' | 'crop' | 'mask'>('all');
   const [folderFilter, setFolderFilter] = useState<string>('all');
+  const [selectedOutputPaths, setSelectedOutputPaths] = useState<Set<string>>(new Set());
+  const [ratingSaving, setRatingSaving] = useState(false);
 
   const { thumbs, loadThumb } = useCroppedThumbQueue(records);
 
@@ -72,6 +75,14 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
   useEffect(() => {
     setPreviewIndex(null);
   }, [ratingFilter, outputModeFilter, folderFilter]);
+
+  useEffect(() => {
+    setSelectedOutputPaths((prev) => {
+      const visible = new Set(filteredSorted.map((r) => r.output_path));
+      const next = new Set([...prev].filter((p) => visible.has(p)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [filteredSorted]);
 
   const total = filteredSorted.length;
   const currentRecord = previewIndex !== null ? filteredSorted[previewIndex] : null;
@@ -143,6 +154,28 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
     ? '没有匹配的已裁剪图片'
     : undefined;
 
+  const handleSelectAll = () => {
+    setSelectedOutputPaths(new Set(filteredSorted.map((r) => r.output_path)));
+  };
+
+  const handleClearSelection = () => {
+    setSelectedOutputPaths(new Set());
+  };
+
+  const handleSetRating = async (rating: number) => {
+    if (selectedOutputPaths.size === 0 || ratingSaving) return;
+    setRatingSaving(true);
+    try {
+      const records = await setCropRecordsRating([...selectedOutputPaths], rating);
+      onCropRecordsUpdated?.(records);
+      setSelectedOutputPaths(new Set());
+    } catch (err: any) {
+      alert('批量改星级失败: ' + (err?.message || String(err)));
+    } finally {
+      setRatingSaving(false);
+    }
+  };
+
   return (
     <div
       style={{
@@ -153,7 +186,7 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
         display: 'flex',
         flexDirection: 'column',
       }}
-      onClick={onClose}
+      onClick={(e) => e.stopPropagation()}
     >
       {/* Header */}
       <div
@@ -243,6 +276,59 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
         )}
       </div>
 
+      {/* Batch toolbar */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '8px 20px',
+          borderBottom: '1px solid var(--border)',
+          background: 'var(--panel)',
+          flexShrink: 0,
+          flexWrap: 'wrap',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button className="btn" style={{ fontSize: 13 }} onClick={handleSelectAll}>全选</button>
+        <button className="btn" style={{ fontSize: 13 }} onClick={handleClearSelection}>清空</button>
+        <span style={{ fontSize: 13, color: 'var(--text)' }}>已选 {selectedOutputPaths.size} 张</span>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button
+            className="btn"
+            style={{ fontSize: 13 }}
+            disabled={ratingSaving || selectedOutputPaths.size === 0}
+            onClick={() => handleSetRating(0)}
+          >
+            清空星级
+          </button>
+          <button
+            className="btn"
+            style={{ fontSize: 13 }}
+            disabled={ratingSaving || selectedOutputPaths.size === 0}
+            onClick={() => handleSetRating(1)}
+          >
+            1★
+          </button>
+          <button
+            className="btn"
+            style={{ fontSize: 13 }}
+            disabled={ratingSaving || selectedOutputPaths.size === 0}
+            onClick={() => handleSetRating(2)}
+          >
+            2★
+          </button>
+          <button
+            className="btn"
+            style={{ fontSize: 13 }}
+            disabled={ratingSaving || selectedOutputPaths.size === 0}
+            onClick={() => handleSetRating(3)}
+          >
+            3★
+          </button>
+        </div>
+      </div>
+
       <CroppedGalleryGrid
         sorted={filteredSorted}
         thumbs={thumbs}
@@ -250,6 +336,15 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord 
         onOpenPreview={openPreview}
         onRecrop={onRecrop}
         emptyTitle={emptyTitle}
+        selectedOutputPaths={selectedOutputPaths}
+        onToggleSelect={(outputPath) => {
+          setSelectedOutputPaths((prev) => {
+            const next = new Set(prev);
+            if (next.has(outputPath)) next.delete(outputPath);
+            else next.add(outputPath);
+            return next;
+          });
+        }}
       />
 
       {previewIndex !== null && currentRecord && (

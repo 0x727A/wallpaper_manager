@@ -7,9 +7,11 @@ interface CroppedRecordCardProps {
   thumb: ThumbEntry | undefined;
   onOpenPreview: () => void;
   onRecrop?: (record: SortedRecord) => void;
+  isSelected: boolean;
+  onToggleSelect: () => void;
 }
 
-export function CroppedRecordCard({ record, thumb, onOpenPreview, onRecrop }: CroppedRecordCardProps) {
+export function CroppedRecordCard({ record, thumb, onOpenPreview, onRecrop, isSelected, onToggleSelect }: CroppedRecordCardProps) {
   return (
     <div
       style={{
@@ -24,6 +26,7 @@ export function CroppedRecordCard({ record, thumb, onOpenPreview, onRecrop }: Cr
       {/* Thumbnail */}
       <div
         style={{
+          position: 'relative',
           aspectRatio: '16 / 10',
           background: 'var(--canvas)',
           cursor: thumb?.path ? 'zoom-in' : 'default',
@@ -36,6 +39,22 @@ export function CroppedRecordCard({ record, thumb, onOpenPreview, onRecrop }: Cr
           if (thumb?.path) onOpenPreview();
         }}
       >
+        <div
+          style={{
+            position: 'absolute',
+            top: 8,
+            left: 8,
+            zIndex: 2,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onClick={(e) => e.stopPropagation()}
+            onChange={onToggleSelect}
+          />
+        </div>
         {thumb?.path ? (
           <img
             src={convertFileSrc(thumb.path)}
