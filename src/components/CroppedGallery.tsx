@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import { CropRecord, setCropRecordsRating } from '../api';
 import { useCroppedThumbQueue } from './cropped-gallery/useCroppedThumbQueue';
 import { CroppedGalleryGrid } from './cropped-gallery/CroppedGalleryGrid';
+import { CroppedGalleryTable } from './cropped-gallery/CroppedGalleryTable';
 import { CroppedPreviewOverlay } from './cropped-gallery/CroppedPreviewOverlay';
 import { SortedRecord } from './cropped-gallery/types';
 
@@ -26,6 +27,7 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
   const [outputModeFilter, setOutputModeFilter] = useState<'all' | 'crop' | 'mask'>('all');
   const [folderFilter, setFolderFilter] = useState<string>('all');
   const [selectedOutputPaths, setSelectedOutputPaths] = useState<Set<string>>(new Set());
+  const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
   const [ratingSaving, setRatingSaving] = useState(false);
 
   const { thumbs, loadThumb } = useCroppedThumbQueue(records);
@@ -162,6 +164,15 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
     setSelectedOutputPaths(new Set());
   };
 
+  const toggleSelect = (outputPath: string) => {
+    setSelectedOutputPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(outputPath)) next.delete(outputPath);
+      else next.add(outputPath);
+      return next;
+    });
+  };
+
   const handleSetRating = async (rating: number) => {
     if (selectedOutputPaths.size === 0 || ratingSaving) return;
     setRatingSaving(true);
@@ -182,7 +193,7 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
         position: 'fixed',
         inset: 0,
         zIndex: 100,
-        background: 'rgba(0,0,0,0.75)',
+        background: 'var(--panel)',
         display: 'flex',
         flexDirection: 'column',
       }}
@@ -290,6 +301,22 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
         }}
         onClick={(e) => e.stopPropagation()}
       >
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            className={`btn${viewMode === 'grid' ? ' btn-accent' : ''}`}
+            style={{ fontSize: 13 }}
+            onClick={() => setViewMode('grid')}
+          >
+            网格
+          </button>
+          <button
+            className={`btn${viewMode === 'table' ? ' btn-accent' : ''}`}
+            style={{ fontSize: 13 }}
+            onClick={() => setViewMode('table')}
+          >
+            表格
+          </button>
+        </div>
         <button className="btn" style={{ fontSize: 13 }} onClick={handleSelectAll}>全选</button>
         <button className="btn" style={{ fontSize: 13 }} onClick={handleClearSelection}>清空</button>
         <span style={{ fontSize: 13, color: 'var(--text)' }}>已选 {selectedOutputPaths.size} 张</span>
@@ -329,23 +356,27 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
         </div>
       </div>
 
-      <CroppedGalleryGrid
-        sorted={filteredSorted}
-        thumbs={thumbs}
-        loadThumb={loadThumb}
-        onOpenPreview={openPreview}
-        onRecrop={onRecrop}
-        emptyTitle={emptyTitle}
-        selectedOutputPaths={selectedOutputPaths}
-        onToggleSelect={(outputPath) => {
-          setSelectedOutputPaths((prev) => {
-            const next = new Set(prev);
-            if (next.has(outputPath)) next.delete(outputPath);
-            else next.add(outputPath);
-            return next;
-          });
-        }}
-      />
+      {viewMode === 'grid' ? (
+        <CroppedGalleryGrid
+          sorted={filteredSorted}
+          thumbs={thumbs}
+          loadThumb={loadThumb}
+          onOpenPreview={openPreview}
+          onRecrop={onRecrop}
+          emptyTitle={emptyTitle}
+          selectedOutputPaths={selectedOutputPaths}
+          onToggleSelect={toggleSelect}
+        />
+      ) : (
+        <CroppedGalleryTable
+          sorted={filteredSorted}
+          selectedOutputPaths={selectedOutputPaths}
+          onToggleSelect={toggleSelect}
+          onOpenPreview={openPreview}
+          onRecrop={onRecrop}
+          emptyTitle={emptyTitle}
+        />
+      )}
 
       {previewIndex !== null && currentRecord && (
         <CroppedPreviewOverlay

@@ -45,6 +45,7 @@ export function CroppedRecordCard({ record, thumb, onOpenPreview, onRecrop, isSe
             top: 8,
             left: 8,
             zIndex: 2,
+            padding: 4,
           }}
           onClick={(e) => e.stopPropagation()}
         >
@@ -53,6 +54,12 @@ export function CroppedRecordCard({ record, thumb, onOpenPreview, onRecrop, isSe
             checked={isSelected}
             onClick={(e) => e.stopPropagation()}
             onChange={onToggleSelect}
+            style={{
+              width: 18,
+              height: 18,
+              accentColor: 'var(--accent)',
+              cursor: 'pointer',
+            }}
           />
         </div>
         {thumb?.path ? (

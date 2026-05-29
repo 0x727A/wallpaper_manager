@@ -76,6 +76,8 @@ export function CroppedGalleryGrid({ sorted, thumbs, loadThumb, onOpenPreview, o
           flex: 1,
           overflowY: 'auto',
           padding: 20,
+          background: 'var(--panel)',
+          color: 'var(--text)',
         }}
         onClick={(e) => e.stopPropagation()}
       >
