@@ -8,9 +8,10 @@ interface Props {
   onConfirm: () => void;
   onAdjust: () => void;
   onCancel: () => void;
+  saving?: boolean;
 }
 
-export function RecropCompareModal({ oldRecord, preview, onConfirm, onAdjust, onCancel }: Props) {
+export function RecropCompareModal({ oldRecord, preview, onConfirm, onAdjust, onCancel, saving }: Props) {
   const [oldPath, setOldPath] = useState<string | null>(null);
   const [oldFailed, setOldFailed] = useState(false);
 
@@ -58,7 +59,7 @@ export function RecropCompareModal({ oldRecord, preview, onConfirm, onAdjust, on
         <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>
           对比裁剪效果
         </div>
-        <button className="btn btn-icon" onClick={onAdjust} title="关闭">
+        <button className="btn btn-icon" onClick={onAdjust} title="关闭" disabled={saving}>
           <X size={16} />
         </button>
       </div>
@@ -143,17 +144,23 @@ export function RecropCompareModal({ oldRecord, preview, onConfirm, onAdjust, on
           flexShrink: 0,
         }}
       >
-        <button className="btn" onClick={onCancel}>
+        <button className="btn" onClick={onCancel} disabled={saving}>
           <Trash2 size={14} style={{ marginRight: 4 }} />
           取消重裁
         </button>
-        <button className="btn btn-accent" onClick={onAdjust}>
+        <button className="btn btn-accent" onClick={onAdjust} disabled={saving}>
           <ArrowLeft size={14} style={{ marginRight: 4 }} />
           继续调整
         </button>
-        <button className="btn btn-success" onClick={onConfirm}>
+        <button
+          className="btn btn-success"
+          disabled={saving}
+          onClick={() => {
+            if (!saving) onConfirm();
+          }}
+        >
           <Check size={14} style={{ marginRight: 4 }} />
-          使用新裁剪
+          {saving ? '保存中...' : '使用新裁剪'}
         </button>
       </div>
     </div>

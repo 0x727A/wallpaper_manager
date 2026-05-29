@@ -7,9 +7,11 @@ interface CroppedRecordCardProps {
   thumb: ThumbEntry | undefined;
   onOpenPreview: () => void;
   onRecrop?: (record: SortedRecord) => void;
+  isSelected: boolean;
+  onToggleSelect: () => void;
 }
 
-export function CroppedRecordCard({ record, thumb, onOpenPreview, onRecrop }: CroppedRecordCardProps) {
+export function CroppedRecordCard({ record, thumb, onOpenPreview, onRecrop, isSelected, onToggleSelect }: CroppedRecordCardProps) {
   return (
     <div
       style={{
@@ -24,6 +26,7 @@ export function CroppedRecordCard({ record, thumb, onOpenPreview, onRecrop }: Cr
       {/* Thumbnail */}
       <div
         style={{
+          position: 'relative',
           aspectRatio: '16 / 10',
           background: 'var(--canvas)',
           cursor: thumb?.path ? 'zoom-in' : 'default',
@@ -36,6 +39,22 @@ export function CroppedRecordCard({ record, thumb, onOpenPreview, onRecrop }: Cr
           if (thumb?.path) onOpenPreview();
         }}
       >
+        <div
+          style={{
+            position: 'absolute',
+            top: 8,
+            left: 8,
+            zIndex: 2,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onClick={(e) => e.stopPropagation()}
+            onChange={onToggleSelect}
+          />
+        </div>
         {thumb?.path ? (
           <img
             src={convertFileSrc(thumb.path)}
@@ -64,11 +83,23 @@ export function CroppedRecordCard({ record, thumb, onOpenPreview, onRecrop }: Cr
             重新裁剪此图
           </button>
         )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{record.crop_name}</span>
           {(record.rating || 0) > 0 && (
             <span style={{ color: 'var(--accent)', fontSize: 11 }}>{'★'.repeat(record.rating || 0)}</span>
           )}
+          <span
+            style={{
+              fontSize: 10,
+              padding: '1px 5px',
+              borderRadius: 3,
+              background: 'var(--border)',
+              color: 'var(--muted)',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {record.output_mode === 'mask' ? '遮罩保留' : '硬裁剪'}
+          </span>
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
           <Folder size={10} />

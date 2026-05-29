@@ -15,9 +15,12 @@ interface CroppedGalleryGridProps {
   loadThumb: (record: CropRecord) => void;
   onOpenPreview: (index: number) => void;
   onRecrop?: (record: CropRecord) => void;
+  emptyTitle?: string;
+  selectedOutputPaths: Set<string>;
+  onToggleSelect: (outputPath: string) => void;
 }
 
-export function CroppedGalleryGrid({ sorted, thumbs, loadThumb, onOpenPreview, onRecrop }: CroppedGalleryGridProps) {
+export function CroppedGalleryGrid({ sorted, thumbs, loadThumb, onOpenPreview, onRecrop, emptyTitle, selectedOutputPaths, onToggleSelect }: CroppedGalleryGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [layout, setLayout] = useState({ cols: 3, cardHeight: 282 });
 
@@ -78,7 +81,7 @@ export function CroppedGalleryGrid({ sorted, thumbs, loadThumb, onOpenPreview, o
       >
         <div className="empty-state" style={{ height: '60vh' }}>
           <ImageOff size={48} style={{ opacity: 0.3 }} />
-          <div className="empty-state-title">还没有已裁剪图片</div>
+          <div className="empty-state-title">{emptyTitle ?? '还没有已裁剪图片'}</div>
         </div>
       </div>
     );
@@ -124,6 +127,8 @@ export function CroppedGalleryGrid({ sorted, thumbs, loadThumb, onOpenPreview, o
                     thumb={thumbs[r.output_path]}
                     onOpenPreview={() => onOpenPreview(globalIdx)}
                     onRecrop={onRecrop}
+                    isSelected={selectedOutputPaths.has(r.output_path)}
+                    onToggleSelect={() => onToggleSelect(r.output_path)}
                   />
                 );
               })}

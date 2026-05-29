@@ -31,6 +31,7 @@ interface Props {
   onCancelRecrop?: () => void;
   onConfirmRecrop?: (request: SaveCropRequest) => void;
   onSkipImage?: () => void;
+  recropSaving?: boolean;
 }
 
 export function ImageEditor({
@@ -49,6 +50,7 @@ export function ImageEditor({
   onPreviewRecrop,
   onCancelRecrop,
   onConfirmRecrop,
+  recropSaving,
 }: Props) {
   const [crop, setCrop] = useState<PercentCrop>();
   const [completedCrop, setCompletedCrop] = useState<PercentCrop>();
@@ -425,7 +427,7 @@ export function ImageEditor({
           onWidthChange={handleWidthChange}
           onHeightChange={handleHeightChange}
           isRecropActive={!!isRecropActive}
-          saving={saving}
+          saving={saving || !!recropSaving}
           onPreviewRecrop={handlePreviewRecrop}
           onCancelRecrop={onCancelRecrop}
           onConfirmRecrop={handleConfirmRecrop}

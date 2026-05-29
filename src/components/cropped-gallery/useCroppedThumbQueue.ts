@@ -1,9 +1,9 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { ensureCroppedThumbnails } from '../../api';
 import { ThumbEntry } from './types';
 import { CropRecord } from '../../api';
 
-const BATCH_SIZE = 12;
+const BATCH_SIZE = 1;
 const CONCURRENCY = 4;
 
 export function useCroppedThumbQueue(records?: CropRecord[]) {
@@ -18,6 +18,9 @@ export function useCroppedThumbQueue(records?: CropRecord[]) {
   const runningRef = useRef(0);
   const disposedRef = useRef(false);
   const generationRef = useRef(0);
+  const validKeysRef = useRef<Set<string>>(new Set());
+  const validKeys = useMemo(() => new Set(records?.map((r) => r.output_path) ?? []), [records]);
+  validKeysRef.current = validKeys;
 
   const flushThumbs = useCallback(() => {
     if (disposedRef.current) return;
@@ -55,6 +58,7 @@ export function useCroppedThumbQueue(records?: CropRecord[]) {
         .then((map) => {
           if (generationRef.current !== gen) return;
           for (const key of keys) {
+            if (!validKeysRef.current.has(key)) continue;
             loadedRef.current.add(key);
             if (map[key]) {
               pendingThumbsRef.current[key] = { path: map[key], failed: false };
@@ -67,6 +71,7 @@ export function useCroppedThumbQueue(records?: CropRecord[]) {
           console.error('ensureCroppedThumbnails failed', keys, err);
           if (generationRef.current !== gen) return;
           for (const key of keys) {
+            if (!validKeysRef.current.has(key)) continue;
             loadedRef.current.add(key);
             pendingThumbsRef.current[key] = { path: '', failed: true };
           }
@@ -77,7 +82,7 @@ export function useCroppedThumbQueue(records?: CropRecord[]) {
           }
           runningRef.current = Math.max(0, runningRef.current - 1);
 
-          if (generationRef.current !== gen || disposedRef.current) return;
+          if (disposedRef.current) return;
 
           flushThumbs();
           scheduleLoad();
@@ -90,7 +95,7 @@ export function useCroppedThumbQueue(records?: CropRecord[]) {
     if (loadedRef.current.has(key) || loadingRef.current.has(key) || queuedRef.current.has(key))
       return;
     queuedRef.current.add(key);
-    queueRef.current.push(record);
+    queueRef.current.unshift(record);
     scheduleLoad();
   }, [scheduleLoad]);
 
@@ -114,28 +119,25 @@ export function useCroppedThumbQueue(records?: CropRecord[]) {
   }, []);
 
   useEffect(() => {
-    generationRef.current++;
-    const validKeys = new Set(records?.map((r) => r.output_path) ?? []);
-
     for (const key of Array.from(loadedRef.current)) {
-      if (!validKeys.has(key)) loadedRef.current.delete(key);
+      if (!validKeysRef.current.has(key)) loadedRef.current.delete(key);
     }
     for (const key of Array.from(queuedRef.current)) {
-      if (!validKeys.has(key)) queuedRef.current.delete(key);
+      if (!validKeysRef.current.has(key)) queuedRef.current.delete(key);
     }
     for (const key of Array.from(loadingRef.current)) {
-      if (!validKeys.has(key)) loadingRef.current.delete(key);
+      if (!validKeysRef.current.has(key)) loadingRef.current.delete(key);
     }
-    queueRef.current = queueRef.current.filter((r) => validKeys.has(r.output_path));
+    queueRef.current = queueRef.current.filter((r) => validKeysRef.current.has(r.output_path));
     for (const key of Object.keys(pendingThumbsRef.current)) {
-      if (!validKeys.has(key)) delete pendingThumbsRef.current[key];
+      if (!validKeysRef.current.has(key)) delete pendingThumbsRef.current[key];
     }
 
     setThumbs((prev) => {
       const next: Record<string, ThumbEntry> = {};
       let changed = false;
       for (const key of Object.keys(prev)) {
-        if (validKeys.has(key)) {
+        if (validKeysRef.current.has(key)) {
           next[key] = prev[key];
         } else {
           changed = true;
@@ -143,7 +145,7 @@ export function useCroppedThumbQueue(records?: CropRecord[]) {
       }
       return changed ? next : prev;
     });
-  }, [records]);
+  }, [validKeys]);
 
   return { thumbs, loadThumb };
 }

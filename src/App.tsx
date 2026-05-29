@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { ImageOff } from 'lucide-react';
 import { SettingsBar } from './components/SettingsBar';
 import { ImageGrid, StatusFilter } from './components/ImageGrid';
@@ -149,6 +149,12 @@ export default function App() {
   }, [allImages]);
 
   const [recropTarget, setRecropTarget] = useState<CropRecord | null>(null);
+  const recropTargetRef = useRef(recropTarget);
+  useEffect(() => {
+    recropTargetRef.current = recropTarget;
+  }, [recropTarget]);
+  const [recropSaving, setRecropSaving] = useState(false);
+  const recropSavingRef = useRef(false);
   const [recropCompare, setRecropCompare] = useState<{
     oldRecord: CropRecord;
     preview: CropPreview;
@@ -367,6 +373,9 @@ export default function App() {
       );
       return groupBySourcePath(nextFlat);
     });
+    if (recropTargetRef.current?.output_path === deleted.output_path) {
+      exitRecropMode();
+    }
     // images auto-updates, selectedIndex corrected by effect
   }, []);
 
@@ -429,7 +438,9 @@ export default function App() {
   }, [recropTarget]);
 
   const handleConfirmRecrop = useCallback(async (request: SaveCropRequest) => {
-    if (!recropTarget) return;
+    if (!recropTarget || recropSavingRef.current) return;
+    recropSavingRef.current = true;
+    setRecropSaving(true);
     try {
       const result = await saveRecrop({
         old_output_path: recropTarget.output_path,
@@ -465,6 +476,9 @@ export default function App() {
       setRecropCompare(null);
     } catch (e: any) {
       alert('保存失败: ' + (e?.message || String(e)));
+    } finally {
+      recropSavingRef.current = false;
+      setRecropSaving(false);
     }
   }, [recropTarget, allImages, skipRecords, preRecropCategory]);
 
@@ -524,7 +538,10 @@ export default function App() {
         onScan={handleScan}
         loading={loading}
         onImportComplete={handleImportComplete}
-        onCroppedGalleryOpen={() => setCroppedGalleryOpen(true)}
+        onCroppedGalleryOpen={() => {
+          exitRecropMode();
+          setCroppedGalleryOpen(true);
+        }}
       />
       <div className="app-body">
         <div className="sidebar">
@@ -575,6 +592,7 @@ export default function App() {
               onPreviewRecrop={handlePreviewRecrop}
               onCancelRecrop={handleCancelRecrop}
               onConfirmRecrop={handleConfirmRecrop}
+              recropSaving={recropSaving}
             />
           ) : settings.source_dir ? (
             <div className="empty-state">
@@ -608,6 +626,7 @@ export default function App() {
           onClose={() => setCroppedGalleryOpen(false)}
           onRecrop={startRecrop}
           onDeleteCropRecord={handleDeleteCropRecord}
+          onCropRecordsUpdated={(records) => setCropRecords(groupBySourcePath(records))}
         />
       )}
       {recropCompare && (
@@ -617,6 +636,7 @@ export default function App() {
           onConfirm={() => handleConfirmRecrop(recropCompare.cropRequest)}
           onAdjust={() => setRecropCompare(null)}
           onCancel={handleCancelRecrop}
+          saving={recropSaving}
         />
       )}
     </div>
