@@ -128,6 +128,11 @@ export function ImageEditor({
         .then((p) => {
           if (cancelled) return;
           setPreview(p);
+
+          const aspect = RATIOS.find((r) => r.value === ratioModeRef.current)?.aspect;
+          if (!isRecropActiveRef.current) {
+            initCrop(p.original_width, p.original_height, aspect);
+          }
         })
         .catch((err) => {
           console.error('resolvePreviewImage failed', err);
@@ -158,15 +163,7 @@ export function ImageEditor({
     setCompletedCrop(percentCrop);
   }, [isRecropActive, recropTarget, preview, onRatioModeChange]);
 
-  // preview 首次到达时初始化裁剪框；比例变化由 handleRatioChange 单独处理
-  useEffect(() => {
-    if (preview) {
-      const aspect = RATIOS.find((r) => r.value === ratioModeRef.current)?.aspect;
-      if (!isRecropActiveRef.current) {
-        initCrop(preview.original_width, preview.original_height, aspect);
-      }
-    }
-  }, [preview, initCrop]);
+  // preview 初始化已合并到图片切换 effect，不再单独监听 preview 变化
 
   const calculateFitZoom = useCallback(() => {
     if (!preview || !editorViewportRef.current) return null;
@@ -397,6 +394,7 @@ export function ImageEditor({
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <CropCanvas
+          key={`${image.source_path}:${preview?.src_url ?? 'loading'}`}
           preview={preview}
           imageFilename={image.filename}
           crop={crop}

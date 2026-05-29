@@ -79,6 +79,7 @@ export function CroppedGalleryGrid({ sorted, thumbs, loadThumb, onOpenPreview, o
           background: 'var(--panel)',
           color: 'var(--text)',
         }}
+        data-cropped-gallery-scroll
         onClick={(e) => e.stopPropagation()}
       >
         <div className="empty-state" style={{ height: '60vh' }}>
@@ -97,6 +98,7 @@ export function CroppedGalleryGrid({ sorted, thumbs, loadThumb, onOpenPreview, o
         overflowY: 'auto',
         padding: 20,
       }}
+      data-cropped-gallery-scroll
       onClick={(e) => e.stopPropagation()}
     >
       <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>

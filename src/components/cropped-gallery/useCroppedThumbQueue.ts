@@ -5,6 +5,26 @@ import { CropRecord } from '../../api';
 
 const BATCH_SIZE = 1;
 const CONCURRENCY = 4;
+const THUMB_TIMEOUT_MS = 12000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error('缩略图生成超时'));
+    }, ms);
+
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
 
 export function useCroppedThumbQueue(records?: CropRecord[]) {
   const [thumbs, setThumbs] = useState<Record<string, ThumbEntry>>({});
@@ -54,7 +74,7 @@ export function useCroppedThumbQueue(records?: CropRecord[]) {
       if (keys.length === 0) continue;
 
       runningRef.current++;
-      ensureCroppedThumbnails(keys)
+      withTimeout(ensureCroppedThumbnails(keys), THUMB_TIMEOUT_MS)
         .then((map) => {
           if (generationRef.current !== gen) return;
           for (const key of keys) {

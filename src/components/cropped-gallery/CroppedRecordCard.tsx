@@ -29,15 +29,13 @@ export function CroppedRecordCard({ record, thumb, onOpenPreview, onRecrop, isSe
           position: 'relative',
           aspectRatio: '16 / 10',
           background: 'var(--canvas)',
-          cursor: thumb?.path ? 'zoom-in' : 'default',
+          cursor: 'zoom-in',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           overflow: 'hidden',
         }}
-        onClick={() => {
-          if (thumb?.path) onOpenPreview();
-        }}
+        onClick={onOpenPreview}
       >
         <div
           style={{
@@ -69,7 +67,7 @@ export function CroppedRecordCard({ record, thumb, onOpenPreview, onRecrop, isSe
             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           />
         ) : thumb?.failed ? (
-          <div style={{ color: 'var(--muted)', fontSize: 12 }}>文件不存在</div>
+          <div style={{ color: 'var(--muted)', fontSize: 12 }}>缩略图不可用</div>
         ) : (
           <div style={{ color: 'var(--muted)', fontSize: 12 }}>加载中...</div>
         )}

@@ -569,6 +569,7 @@ export default function App() {
         <div className="editor">
           {selectedImage ? (
             <ImageEditor
+              key={`${selectedImage.source_path}:${recropTarget?.output_path ?? 'normal'}`}
               image={selectedImage}
               existingCrops={cropRecords[selectedImage.source_path] || []}
               onSave={handleSaveCrop}

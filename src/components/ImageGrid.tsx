@@ -22,6 +22,99 @@ interface Props {
 const PAGE_SIZE = 40;
 const CONCURRENCY = 2;
 
+interface InlineSelectOption<T extends string> {
+  value: T;
+  label: string;
+}
+
+function InlineSelect<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: InlineSelectOption<T>[];
+  onChange: (value: T) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = options.find((o) => o.value === value);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [open]);
+
+  return (
+    <div style={{ position: 'relative', flex: 1 }}>
+      <button
+        type="button"
+        className="select"
+        style={{
+          width: '100%',
+          textAlign: 'left',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {current?.label ?? value}
+        </span>
+        <span style={{ marginLeft: 8 }}>⌄</span>
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 4px)',
+            left: 0,
+            right: 0,
+            zIndex: 20,
+            maxHeight: 260,
+            overflowY: 'auto',
+            background: 'var(--panel)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            boxShadow: '0 12px 30px rgba(0,0,0,0.25)',
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className="btn"
+              style={{
+                width: '100%',
+                justifyContent: 'flex-start',
+                border: 'none',
+                borderRadius: 0,
+                background: option.value === value ? 'var(--panel-2)' : 'transparent',
+              }}
+              onClick={() => {
+                onChange(option.value);
+                setOpen(false);
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ImageGrid({
   images,
   selectedIndex,
@@ -184,28 +277,24 @@ export function ImageGrid({
           />
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <select
-            className="select"
+          <InlineSelect
             value={category}
-            onChange={(e) => onCategoryChange(e.target.value)}
-            style={{ flex: 1 }}
-          >
-            <option value="all">全部分类</option>
-            {categories.map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
-          <select
-            className="select"
+            onChange={onCategoryChange}
+            options={[
+              { value: 'all', label: '全部分类' },
+              ...categories.map((c) => ({ value: c, label: c })),
+            ]}
+          />
+          <InlineSelect<StatusFilter>
             value={statusFilter}
-            onChange={(e) => onStatusFilterChange(e.target.value as StatusFilter)}
-            style={{ flex: 1 }}
-          >
-            <option value="all">全部</option>
-            <option value="cropped">已裁剪</option>
-            <option value="uncropped">未裁剪</option>
-            <option value="skipped">跳过</option>
-          </select>
+            onChange={onStatusFilterChange}
+            options={[
+              { value: 'all', label: '全部' },
+              { value: 'cropped', label: '已裁剪' },
+              { value: 'uncropped', label: '未裁剪' },
+              { value: 'skipped', label: '跳过' },
+            ]}
+          />
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6, textAlign: 'right' }}>
           {visibleImages.length} / {images.length}

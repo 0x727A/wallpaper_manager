@@ -101,7 +101,7 @@ export function CropCanvas({
       className="canvas-area"
       style={{ cursor: isPanning ? 'grabbing' : 'default' }}
     >
-      {preview ? (
+      {preview && crop ? (
         <div
           className={`zoom-wrapper crop-guide crop-guide-${guideMode}`}
           style={{
@@ -111,7 +111,9 @@ export function CropCanvas({
           }}
         >
           <ReactCrop
+            key={preview.src_url}
             crop={crop}
+            keepSelection
             onChange={(_, percentCrop) => {
               onCropChange(percentCrop);
               onCropComplete(percentCrop);

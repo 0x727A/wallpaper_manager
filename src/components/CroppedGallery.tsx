@@ -5,7 +5,7 @@ import { useCroppedThumbQueue } from './cropped-gallery/useCroppedThumbQueue';
 import { CroppedGalleryGrid } from './cropped-gallery/CroppedGalleryGrid';
 import { CroppedGalleryTable } from './cropped-gallery/CroppedGalleryTable';
 import { CroppedPreviewOverlay } from './cropped-gallery/CroppedPreviewOverlay';
-import { SortedRecord } from './cropped-gallery/types';
+import { SortedRecord, TableSortKey, SortDirection } from './cropped-gallery/types';
 
 interface Props {
   records: CropRecord[];
@@ -28,6 +28,7 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
   const [folderFilter, setFolderFilter] = useState<string>('all');
   const [selectedOutputPaths, setSelectedOutputPaths] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
+  const [tableSort, setTableSort] = useState<{ key: TableSortKey; direction: SortDirection }>({ key: 'created_at', direction: 'desc' });
   const [ratingSaving, setRatingSaving] = useState(false);
 
   const { thumbs, loadThumb } = useCroppedThumbQueue(records);
@@ -74,6 +75,43 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
     });
   }, [sortedAll, ratingFilter, outputModeFilter, folderFilter]);
 
+  const displaySorted = useMemo(() => {
+    if (viewMode !== 'table') return filteredSorted;
+
+    const direction = tableSort.direction === 'asc' ? 1 : -1;
+
+    return [...filteredSorted].sort((a, b) => {
+      let result = 0;
+
+      switch (tableSort.key) {
+        case 'created_at':
+          result = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+          break;
+        case 'rating':
+          result = (a.rating || 0) - (b.rating || 0);
+          break;
+        case 'folder':
+          result = getRecordFolder(a).localeCompare(getRecordFolder(b));
+          break;
+        case 'output_mode':
+          result = (a.output_mode || 'crop').localeCompare(b.output_mode || 'crop');
+          break;
+        case 'dimensions':
+          result = a.width * a.height - b.width * b.height || a.width - b.width || a.height - b.height;
+          break;
+        case 'relative_path':
+          result = a.relative_path.localeCompare(b.relative_path);
+          break;
+        case 'crop_name':
+          result = a.crop_name.localeCompare(b.crop_name);
+          break;
+      }
+
+      if (result !== 0) return result * direction;
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+  }, [filteredSorted, viewMode, tableSort]);
+
   useEffect(() => {
     setPreviewIndex(null);
   }, [ratingFilter, outputModeFilter, folderFilter]);
@@ -86,34 +124,52 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
     });
   }, [filteredSorted]);
 
-  const total = filteredSorted.length;
-  const currentRecord = previewIndex !== null ? filteredSorted[previewIndex] : null;
+  const total = displaySorted.length;
+  const currentRecord = previewIndex !== null ? displaySorted[previewIndex] : null;
 
   const goPrev = useCallback(() => {
     setPreviewIndex((i) => {
       if (i === null || total <= 1) return i;
       const next = i === 0 ? total - 1 : i - 1;
-      loadThumb(filteredSorted[next]);
+      loadThumb(displaySorted[next]);
       return next;
     });
-  }, [total, filteredSorted, loadThumb]);
+  }, [total, displaySorted, loadThumb]);
 
   const goNext = useCallback(() => {
     setPreviewIndex((i) => {
       if (i === null || total <= 1) return i;
       const next = i === total - 1 ? 0 : i + 1;
-      loadThumb(filteredSorted[next]);
+      loadThumb(displaySorted[next]);
       return next;
     });
-  }, [total, filteredSorted, loadThumb]);
+  }, [total, displaySorted, loadThumb]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setPreviewIndex((i) => {
-          if (i !== null) return null;
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (previewIndex !== null) {
+          setPreviewIndex(null);
+        } else {
           onClose();
-          return i;
+        }
+        return;
+      }
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+        if (['input', 'textarea', 'select'].includes(tag)) return;
+
+        e.preventDefault();
+
+        if (previewIndex !== null) return;
+
+        const scroller = document.querySelector<HTMLElement>('[data-cropped-gallery-scroll]');
+        scroller?.scrollBy({
+          top: e.key === 'ArrowDown' ? 360 : -360,
+          behavior: 'auto',
         });
         return;
       }
@@ -131,7 +187,7 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [goPrev, goNext, onClose]);
+  }, [goPrev, goNext, onClose, previewIndex]);
 
   const handleImageClick = (e: React.MouseEvent<HTMLImageElement>) => {
     if (total <= 1) return;
@@ -147,7 +203,7 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
 
   const openPreview = (index: number) => {
     setPreviewIndex(index);
-    loadThumb(filteredSorted[index]);
+    loadThumb(displaySorted[index]);
   };
 
   const hasFilters = ratingFilter !== 'all' || outputModeFilter !== 'all' || folderFilter !== 'all';
@@ -157,7 +213,7 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
     : undefined;
 
   const handleSelectAll = () => {
-    setSelectedOutputPaths(new Set(filteredSorted.map((r) => r.output_path)));
+    setSelectedOutputPaths(new Set(displaySorted.map((r) => r.output_path)));
   };
 
   const handleClearSelection = () => {
@@ -358,7 +414,7 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
 
       {viewMode === 'grid' ? (
         <CroppedGalleryGrid
-          sorted={filteredSorted}
+          sorted={displaySorted}
           thumbs={thumbs}
           loadThumb={loadThumb}
           onOpenPreview={openPreview}
@@ -369,12 +425,20 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
         />
       ) : (
         <CroppedGalleryTable
-          sorted={filteredSorted}
+          sorted={displaySorted}
           selectedOutputPaths={selectedOutputPaths}
           onToggleSelect={toggleSelect}
           onOpenPreview={openPreview}
           onRecrop={onRecrop}
           emptyTitle={emptyTitle}
+          sortKey={tableSort.key}
+          sortDirection={tableSort.direction}
+          onSortChange={(key) => {
+            setTableSort((prev) => ({
+              key,
+              direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc',
+            }));
+          }}
         />
       )}
 

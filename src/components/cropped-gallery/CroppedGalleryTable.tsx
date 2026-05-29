@@ -1,5 +1,5 @@
 import { CropRecord } from '../../api';
-import { SortedRecord } from './types';
+import { SortedRecord, TableSortKey } from './types';
 import { ImageOff } from 'lucide-react';
 
 interface CroppedGalleryTableProps {
@@ -9,6 +9,9 @@ interface CroppedGalleryTableProps {
   onOpenPreview: (index: number) => void;
   onRecrop?: (record: CropRecord) => void;
   emptyTitle?: string;
+  sortKey: TableSortKey;
+  sortDirection: 'asc' | 'desc';
+  onSortChange: (key: TableSortKey) => void;
 }
 
 function getRecordFolder(record: CropRecord): string {
@@ -24,6 +27,9 @@ export function CroppedGalleryTable({
   onOpenPreview,
   onRecrop,
   emptyTitle,
+  sortKey,
+  sortDirection,
+  onSortChange,
 }: CroppedGalleryTableProps) {
   if (sorted.length === 0) {
     return (
@@ -32,7 +38,10 @@ export function CroppedGalleryTable({
           flex: 1,
           overflow: 'auto',
           padding: 20,
+          background: 'var(--panel)',
+          color: 'var(--text)',
         }}
+        data-cropped-gallery-scroll
         onClick={(e) => e.stopPropagation()}
       >
         <div className="empty-state" style={{ height: '60vh' }}>
@@ -50,7 +59,9 @@ export function CroppedGalleryTable({
         overflow: 'auto',
         padding: 20,
         background: 'var(--panel)',
+        color: 'var(--text)',
       }}
+      data-cropped-gallery-scroll
       onClick={(e) => e.stopPropagation()}
     >
       <table
@@ -74,13 +85,76 @@ export function CroppedGalleryTable({
           <tr>
             <th style={{ width: 56, padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'right' }}>序号</th>
             <th style={{ width: 40, padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'center' }} />
-            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>文件夹</th>
-            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>原图</th>
-            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>裁剪名</th>
-            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>星级</th>
-            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>输出模式</th>
-            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>尺寸</th>
-            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>创建时间</th>
+            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
+              <button
+                className="btn"
+                style={{ fontSize: 13, padding: 0, border: 'none', background: 'transparent' }}
+                onClick={() => onSortChange('folder')}
+                title="按文件夹排序"
+              >
+                文件夹{sortKey === 'folder' ? (sortDirection === 'asc' ? ' ↑' : ' ↓') : ''}
+              </button>
+            </th>
+            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
+              <button
+                className="btn"
+                style={{ fontSize: 13, padding: 0, border: 'none', background: 'transparent' }}
+                onClick={() => onSortChange('relative_path')}
+                title="按原图排序"
+              >
+                原图{sortKey === 'relative_path' ? (sortDirection === 'asc' ? ' ↑' : ' ↓') : ''}
+              </button>
+            </th>
+            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
+              <button
+                className="btn"
+                style={{ fontSize: 13, padding: 0, border: 'none', background: 'transparent' }}
+                onClick={() => onSortChange('crop_name')}
+                title="按裁剪名排序"
+              >
+                裁剪名{sortKey === 'crop_name' ? (sortDirection === 'asc' ? ' ↑' : ' ↓') : ''}
+              </button>
+            </th>
+            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
+              <button
+                className="btn"
+                style={{ fontSize: 13, padding: 0, border: 'none', background: 'transparent' }}
+                onClick={() => onSortChange('rating')}
+                title="按星级排序"
+              >
+                星级{sortKey === 'rating' ? (sortDirection === 'asc' ? ' ↑' : ' ↓') : ''}
+              </button>
+            </th>
+            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
+              <button
+                className="btn"
+                style={{ fontSize: 13, padding: 0, border: 'none', background: 'transparent' }}
+                onClick={() => onSortChange('output_mode')}
+                title="按输出模式排序"
+              >
+                输出模式{sortKey === 'output_mode' ? (sortDirection === 'asc' ? ' ↑' : ' ↓') : ''}
+              </button>
+            </th>
+            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
+              <button
+                className="btn"
+                style={{ fontSize: 13, padding: 0, border: 'none', background: 'transparent' }}
+                onClick={() => onSortChange('dimensions')}
+                title="按尺寸排序"
+              >
+                尺寸{sortKey === 'dimensions' ? (sortDirection === 'asc' ? ' ↑' : ' ↓') : ''}
+              </button>
+            </th>
+            <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
+              <button
+                className="btn"
+                style={{ fontSize: 13, padding: 0, border: 'none', background: 'transparent' }}
+                onClick={() => onSortChange('created_at')}
+                title="按创建时间排序"
+              >
+                创建时间{sortKey === 'created_at' ? (sortDirection === 'asc' ? ' ↑' : ' ↓') : ''}
+              </button>
+            </th>
             <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', textAlign: 'left' }}>操作</th>
           </tr>
         </thead>
