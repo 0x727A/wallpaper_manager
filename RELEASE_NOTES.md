@@ -5,6 +5,7 @@
 - **辅助线持久化**：`ImageEditor` 选择辅助线后写回 `localStorage`，切换图片/重启应用后保留选择。加入 `GUIDE_MODES` 白名单，防止脏数据回退到默认 `thirds`
 - **批量导入跨平台路径**：新增 `safe_relative_path` 做路径规范化（统一 `\`→`/`、过滤空段和 `.`、拒绝 `..`、防空路径）。导入时优先用 `source_dir + relative_path`，fallback 到旧 `source_path` 仅当文件确实存在。修复 Win 端导入 Mac JSON 时旧绝对路径失效的问题
 - **批量导入进度事件回归**：`batch.rs` 两处错误分支的 emit 改回 `format!("batch-progress-{}", job_id)`，前端按 job id 监听时不再漏掉失败进度
+- **批量导入索引优化**：批量开始前一次性递归扫描 `source_dir` 建 `HashMap` 索引（完整相对路径 + 去掉首层目录的后缀），每条记录 fallback 时 O(1) 查索引，不再每条记录都递归扫盘。Win 端选外层目录时，`SFW/XXX/foo.png` 能正确匹配到 `Wallhaven/SFW/XXX/foo.png`
 
 ---
 
