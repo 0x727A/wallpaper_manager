@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,6 +30,48 @@ fn safe_relative_path(relative_path: &str) -> Result<std::path::PathBuf, String>
     }
 
     Ok(out)
+}
+
+fn build_relative_suffix_index(source_dir: &Path) -> HashMap<String, Vec<std::path::PathBuf>> {
+    let mut index: HashMap<String, Vec<std::path::PathBuf>> = HashMap::new();
+
+    fn walk(root: &Path, dir: &Path, index: &mut HashMap<String, Vec<std::path::PathBuf>>) {
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !crate::paths::is_hidden_or_excluded_dir(name) {
+                    walk(root, &path, index);
+                }
+                continue;
+            }
+
+            if !crate::paths::is_image_file(&path) {
+                continue;
+            }
+
+            let rel = match path.strip_prefix(root) {
+                Ok(r) => r.to_string_lossy().to_string().replace('\\', "/"),
+                Err(_) => continue,
+            };
+
+            // 完整相对路径
+            index.entry(rel.clone()).or_default().push(path.clone());
+
+            // 去掉第一层目录后的后缀
+            if let Some((_, suffix)) = rel.split_once('/') {
+                index.entry(suffix.to_string()).or_default().push(path.clone());
+            }
+        }
+    }
+
+    walk(source_dir, source_dir, &mut index);
+    index
 }
 
 #[tauri::command]
@@ -79,6 +121,9 @@ fn run_batch_from_json_blocking(
         },
     );
 
+    let source_root = Path::new(source_dir);
+    let suffix_index = build_relative_suffix_index(source_root);
+
     let mut done = 0usize;
     for record in records.into_iter() {
         if cancel_flag.load(Ordering::Relaxed) {
@@ -103,16 +148,46 @@ fn run_batch_from_json_blocking(
         let candidate = Path::new(source_dir).join(&rel_path);
         let source_path_str = if candidate.exists() {
             path_string(&candidate)
-        } else if Path::new(&record.source_path).exists() {
-            record.source_path.clone()
         } else {
-            failures.push(BatchFailure {
-                source_path: record.relative_path.clone(),
-                reason: format!("找不到原图: {}", path_string(&candidate)),
-            });
-            done += 1;
-            let _ = handle.emit(format!("batch-progress-{}", job_id).as_str(), BatchProgress { total, done, success, failed: failures.len(), current: current_path.clone() });
-            continue;
+            // 查索引找相同 relative_path 后缀
+            let search_target = rel_path.to_string_lossy().to_string().replace('\\', "/");
+            let matches = suffix_index.get(&search_target).cloned().unwrap_or_default();
+
+            if matches.len() == 1 {
+                path_string(&matches[0])
+            } else if matches.len() > 1 {
+                failures.push(BatchFailure {
+                    source_path: record.relative_path.clone(),
+                    reason: format!("找不到原图：{}。发现多个同名文件，请确认图库目录直接包含该相对路径，或选择包含 Wallhaven 的正确目录。", search_target),
+                });
+                done += 1;
+                let _ = handle.emit(format!("batch-progress-{}", job_id).as_str(), BatchProgress { total, done, success, failed: failures.len(), current: current_path.clone() });
+                continue;
+            } else {
+                // fallback 到 record.source_path
+                if Path::new(&record.source_path).exists() {
+                    match validate_source_path(source_dir, &record.source_path) {
+                        Ok(_) => record.source_path.clone(),
+                        Err(e) => {
+                            failures.push(BatchFailure {
+                                source_path: record.relative_path.clone(),
+                                reason: format!("找不到原图：{}。请确认图库目录直接包含该相对路径，或选择包含 Wallhaven 的正确目录。旧路径也无效：{}", search_target, e),
+                            });
+                            done += 1;
+                            let _ = handle.emit(format!("batch-progress-{}", job_id).as_str(), BatchProgress { total, done, success, failed: failures.len(), current: current_path.clone() });
+                            continue;
+                        }
+                    }
+                } else {
+                    failures.push(BatchFailure {
+                        source_path: record.relative_path.clone(),
+                        reason: format!("找不到原图：{}。请确认图库目录直接包含该相对路径，或选择包含 Wallhaven 的正确目录。", search_target),
+                    });
+                    done += 1;
+                    let _ = handle.emit(format!("batch-progress-{}", job_id).as_str(), BatchProgress { total, done, success, failed: failures.len(), current: current_path.clone() });
+                    continue;
+                }
+            }
         };
 
         let source = match validate_source_path(source_dir, &source_path_str) {
