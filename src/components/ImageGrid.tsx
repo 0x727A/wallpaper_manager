@@ -163,7 +163,12 @@ export function ImageGrid({
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [images]);
+  }, [search, category]);
+
+  useEffect(() => {
+    if (selectedIndex < 0) return;
+    setVisibleCount((prev) => Math.max(prev, selectedIndex + 1, PAGE_SIZE));
+  }, [selectedIndex]);
 
   useEffect(() => {
     const validPaths = new Set(images.map((img) => img.source_path));

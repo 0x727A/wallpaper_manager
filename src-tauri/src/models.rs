@@ -118,6 +118,15 @@ pub(crate) struct CropPreview {
     pub(crate) height: u32,
 }
 
+#[derive(Serialize, Clone, Debug)]
+pub struct RepairCropRecordsResult {
+    pub added: usize,
+    pub updated_paths: usize,
+    pub skipped: usize,
+    pub failed: Vec<String>,
+    pub records: Vec<CropRecord>,
+}
+
 pub struct AppState {
     pub settings: Mutex<Settings>,
     pub cancel_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,

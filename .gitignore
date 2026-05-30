@@ -27,3 +27,5 @@ src-tauri/.tauri/
 *.app
 
 AGENTS.md
+Wallhaven/
+WallhavenCrops/

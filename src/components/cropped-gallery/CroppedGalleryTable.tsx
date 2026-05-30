@@ -7,7 +7,6 @@ interface CroppedGalleryTableProps {
   selectedOutputPaths: Set<string>;
   onToggleSelect: (outputPath: string) => void;
   onOpenPreview: (index: number) => void;
-  onRecrop?: (record: CropRecord) => void;
   emptyTitle?: string;
   sortKey: TableSortKey;
   sortDirection: 'asc' | 'desc';
@@ -25,7 +24,6 @@ export function CroppedGalleryTable({
   selectedOutputPaths,
   onToggleSelect,
   onOpenPreview,
-  onRecrop,
   emptyTitle,
   sortKey,
   sortDirection,
@@ -243,15 +241,6 @@ export function CroppedGalleryTable({
                 >
                   预览
                 </button>
-                {onRecrop && (
-                  <button
-                    className="btn"
-                    style={{ fontSize: 12, padding: '4px 10px', marginLeft: 8 }}
-                    onClick={() => onRecrop(record)}
-                  >
-                    重裁
-                  </button>
-                )}
               </td>
             </tr>
           ))}

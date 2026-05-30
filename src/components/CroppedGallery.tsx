@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { X } from 'lucide-react';
-import { CropRecord, setCropRecordsRating } from '../api';
+import { CropRecord, setCropRecordsRating, repairCropRecordsFromOutputDir } from '../api';
 import { useCroppedThumbQueue } from './cropped-gallery/useCroppedThumbQueue';
 import { CroppedGalleryGrid } from './cropped-gallery/CroppedGalleryGrid';
 import { CroppedGalleryTable } from './cropped-gallery/CroppedGalleryTable';
@@ -30,6 +30,8 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
   const [tableSort, setTableSort] = useState<{ key: TableSortKey; direction: SortDirection }>({ key: 'created_at', direction: 'desc' });
   const [ratingSaving, setRatingSaving] = useState(false);
+  const [previewRatingSaving, setPreviewRatingSaving] = useState(false);
+  const [repairing, setRepairing] = useState(false);
 
   const { thumbs, loadThumb } = useCroppedThumbQueue(records);
 
@@ -376,7 +378,39 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
         <button className="btn" style={{ fontSize: 13 }} onClick={handleSelectAll}>全选</button>
         <button className="btn" style={{ fontSize: 13 }} onClick={handleClearSelection}>清空</button>
         <span style={{ fontSize: 13, color: 'var(--text)' }}>已选 {selectedOutputPaths.size} 张</span>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button
+            className="btn"
+            style={{ fontSize: 13 }}
+            disabled={repairing}
+            onClick={async () => {
+              if (repairing) return;
+              setRepairing(true);
+              try {
+                const result = await repairCropRecordsFromOutputDir();
+                onCropRecordsUpdated?.(result.records);
+                const lines: string[] = [];
+                lines.push(`新增 ${result.added} 条`);
+                lines.push(`修复路径 ${result.updated_paths} 条`);
+                lines.push(`跳过 ${result.skipped} 条`);
+                if (result.failed.length > 0) {
+                  lines.push('');
+                  lines.push('失败:');
+                  result.failed.slice(0, 5).forEach((f) => lines.push(`  · ${f}`));
+                  if (result.failed.length > 5) {
+                    lines.push(`  …还有 ${result.failed.length - 5} 条`);
+                  }
+                }
+                alert(lines.join('\n'));
+              } catch (err: any) {
+                alert('修复失败: ' + (err?.message || String(err)));
+              } finally {
+                setRepairing(false);
+              }
+            }}
+          >
+            {repairing ? '修复中…' : '修复已裁记录'}
+          </button>
           <button
             className="btn"
             style={{ fontSize: 13 }}
@@ -429,7 +463,6 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
           selectedOutputPaths={selectedOutputPaths}
           onToggleSelect={toggleSelect}
           onOpenPreview={openPreview}
-          onRecrop={onRecrop}
           emptyTitle={emptyTitle}
           sortKey={tableSort.key}
           sortDirection={tableSort.direction}
@@ -454,6 +487,19 @@ export function CroppedGallery({ records, onClose, onRecrop, onDeleteCropRecord,
           onDeleteCropRecord={onDeleteCropRecord}
           onRecrop={onRecrop}
           onIndexChange={setPreviewIndex}
+          onSetRating={async (record, rating) => {
+            if (previewRatingSaving) return;
+            setPreviewRatingSaving(true);
+            try {
+              const records = await setCropRecordsRating([record.output_path], rating);
+              onCropRecordsUpdated?.(records);
+            } catch (err: any) {
+              alert('修改星级失败: ' + (err?.message || String(err)));
+            } finally {
+              setPreviewRatingSaving(false);
+            }
+          }}
+          previewRatingSaving={previewRatingSaving}
         />
       )}
     </div>

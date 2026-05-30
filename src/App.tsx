@@ -4,6 +4,7 @@ import { SettingsBar } from './components/SettingsBar';
 import { ImageGrid, StatusFilter } from './components/ImageGrid';
 import { ImageEditor } from './components/ImageEditor';
 import { CroppedGallery } from './components/CroppedGallery';
+import { CroppedPreviewOverlay } from './components/cropped-gallery/CroppedPreviewOverlay';
 import { RecropCompareModal } from './components/RecropCompareModal';
 
 import {
@@ -18,6 +19,7 @@ import {
   readCropRecords,
   readSkipRecords,
   skipImage,
+  setCropRecordsRating,
   resolveOriginalForRecord,
   previewCrop,
   saveRecrop,
@@ -118,6 +120,15 @@ function computeVisibleImages(
   return list;
 }
 
+function findImageIndex(list: ImageEntry[], image: ImageEntry | null): number {
+  if (!image) return -1;
+  return list.findIndex(
+    (item) =>
+      item.source_path === image.source_path ||
+      item.relative_path === image.relative_path
+  );
+}
+
 export default function App() {
   const [allImages, setAllImages] = useState<ImageEntry[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(-1);
@@ -132,6 +143,22 @@ export default function App() {
   const [skipRecords, setSkipRecords] = useState<Record<string, SkipRecord>>({});
   const [loading, setLoading] = useState(false);
   const [continueCropLock, setContinueCropLock] = useState<{ sourcePath: string; index: number } | null>(null);
+  const [savedPreviewRecord, setSavedPreviewRecord] = useState<CropRecord | null>(null);
+  const [savedPreviewRatingSaving, setSavedPreviewRatingSaving] = useState(false);
+
+  useEffect(() => {
+    if (!savedPreviewRecord) return;
+
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setSavedPreviewRecord(null);
+    };
+
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [savedPreviewRecord]);
+
   const flatCropRecords = useMemo(() => Object.values(cropRecords).flat(), [cropRecords]);
 
   const images = useMemo(
@@ -484,6 +511,31 @@ export default function App() {
 
   const handleSkipImage = useCallback(async () => {
     if (!selectedImage) return;
+
+    if (continueCropLock?.sourcePath === selectedImage.source_path) {
+      setContinueCropLock(null);
+
+      const nextImages = computeVisibleImages(
+        allImages,
+        cropRecords,
+        skipRecords,
+        statusFilter,
+        search,
+        category,
+        null
+      );
+
+      if (nextImages.length === 0) {
+        setSelectedIndex(-1);
+        return;
+      }
+
+      const lockIndex = continueCropLock.index;
+      const nextIndex = lockIndex < nextImages.length ? lockIndex : nextImages.length - 1;
+      setSelectedIndex(nextIndex);
+      return;
+    }
+
     try {
       const skippedSourcePath = selectedImage.source_path;
       const skippedRelativePath = selectedImage.relative_path;
@@ -515,7 +567,7 @@ export default function App() {
     } catch (e: any) {
       alert('跳过操作失败: ' + (e?.message || String(e)));
     }
-  }, [selectedImage, selectedIndex, allImages, cropRecords, skipRecords, statusFilter, search, category]);
+  }, [selectedImage, selectedIndex, allImages, cropRecords, skipRecords, statusFilter, search, category, continueCropLock]);
 
   const handleCancelRecrop = useCallback(() => {
     exitRecropMode();
@@ -531,9 +583,31 @@ export default function App() {
         onIncludeNsfwChange={setIncludeNsfw}
         showCropped={showCropped}
         onShowCroppedChange={(v) => {
+          const current = selectedImage;
           const newFilter = v ? 'all' : 'uncropped';
+
           setShowCropped(v);
           setStatusFilter(newFilter);
+          setContinueCropLock(null);
+
+          const nextImages = computeVisibleImages(
+            allImages,
+            cropRecords,
+            skipRecords,
+            newFilter,
+            search,
+            category,
+            null
+          );
+
+          const sameIndex = findImageIndex(nextImages, current);
+          if (sameIndex >= 0) {
+            setSelectedIndex(sameIndex);
+          } else if (nextImages.length === 0) {
+            setSelectedIndex(-1);
+          } else {
+            setSelectedIndex(Math.min(selectedIndex, nextImages.length - 1));
+          }
         }}
         onScan={handleScan}
         loading={loading}
@@ -553,10 +627,33 @@ export default function App() {
             onSelect={handleSelect}
             statusFilter={statusFilter}
             onStatusFilterChange={(filter) => {
+              const current = selectedImage;
               setStatusFilter(filter);
+
               const newShowCropped = filter !== 'uncropped';
               if (showCropped !== newShowCropped) {
                 setShowCropped(newShowCropped);
+              }
+
+              setContinueCropLock(null);
+
+              const nextImages = computeVisibleImages(
+                allImages,
+                cropRecords,
+                skipRecords,
+                filter,
+                search,
+                category,
+                null
+              );
+
+              const sameIndex = findImageIndex(nextImages, current);
+              if (sameIndex >= 0) {
+                setSelectedIndex(sameIndex);
+              } else if (nextImages.length === 0) {
+                setSelectedIndex(-1);
+              } else {
+                setSelectedIndex(Math.min(selectedIndex, nextImages.length - 1));
               }
             }}
             search={search}
@@ -576,6 +673,10 @@ export default function App() {
               onSaveAndContinue={handleSaveAndContinueCrop}
               onDelete={handleDeleteImage}
               onSkipImage={handleSkipImage}
+              onPreviewSavedCrop={setSavedPreviewRecord}
+              isContinueCropActive={
+                !!continueCropLock && continueCropLock.sourcePath === selectedImage.source_path
+              }
               onPrev={() => {
                 setContinueCropLock(null);
                 exitRecropMode();
@@ -628,6 +729,38 @@ export default function App() {
           onRecrop={startRecrop}
           onDeleteCropRecord={handleDeleteCropRecord}
           onCropRecordsUpdated={(records) => setCropRecords(groupBySourcePath(records))}
+        />
+      )}
+      {savedPreviewRecord && (
+        <CroppedPreviewOverlay
+          previewIndex={0}
+          total={1}
+          currentRecord={savedPreviewRecord}
+          onClose={() => setSavedPreviewRecord(null)}
+          goPrev={() => {}}
+          goNext={() => {}}
+          handleImageClick={() => {}}
+          onIndexChange={(index) => {
+            if (index === null) setSavedPreviewRecord(null);
+          }}
+          onDeleteCropRecord={handleDeleteCropRecord}
+          onRecrop={startRecrop}
+          onSetRating={async (record, rating) => {
+            if (savedPreviewRatingSaving) return;
+            setSavedPreviewRatingSaving(true);
+            try {
+              const records = await setCropRecordsRating([record.output_path], rating);
+              setCropRecords(groupBySourcePath(records));
+
+              const updated = records.find((r) => r.output_path === record.output_path);
+              if (updated) setSavedPreviewRecord(updated);
+            } catch (err: any) {
+              alert('修改星级失败: ' + (err?.message || String(err)));
+            } finally {
+              setSavedPreviewRatingSaving(false);
+            }
+          }}
+          previewRatingSaving={savedPreviewRatingSaving}
         />
       )}
       {recropCompare && (

@@ -164,6 +164,16 @@ export const readSkipRecords = (): Promise<SkipRecord[]> =>
 export const setCropRecordsRating = (outputPaths: string[], rating: number): Promise<CropRecord[]> =>
   invoke('set_crop_records_rating', { outputPaths, rating });
 
+export interface RepairCropRecordsResult {
+  added: number;
+  updated_paths: number;
+  skipped: number;
+  failed: string[];
+  records: CropRecord[];
+}
+
+export const repairCropRecordsFromOutputDir = (): Promise<RepairCropRecordsResult> =>
+  invoke('repair_crop_records_from_output_dir');
 
 export const skipImage = (sourcePath: string): Promise<SkipRecord> =>
   invoke('skip_image', { sourcePath });

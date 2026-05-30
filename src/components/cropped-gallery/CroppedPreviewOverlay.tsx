@@ -13,6 +13,8 @@ interface CroppedPreviewOverlayProps {
   onDeleteCropRecord?: (deleted: CropRecord) => void;
   onRecrop?: (record: CropRecord) => void;
   onIndexChange: (index: number | null) => void;
+  onSetRating?: (record: CropRecord, rating: number) => Promise<void> | void;
+  previewRatingSaving?: boolean;
 }
 
 export function CroppedPreviewOverlay({
@@ -26,9 +28,23 @@ export function CroppedPreviewOverlay({
   onDeleteCropRecord,
   onRecrop,
   onIndexChange,
+  onSetRating,
+  previewRatingSaving,
 }: CroppedPreviewOverlayProps) {
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
+
+  useEffect(() => {
+    if (!onSetRating) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key >= '0' && e.key <= '3') {
+        e.preventDefault();
+        onSetRating(currentRecord, Number(e.key));
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [currentRecord, onSetRating]);
 
   useEffect(() => {
     setPreviewPath(null);
@@ -48,7 +64,7 @@ export function CroppedPreviewOverlay({
     return () => {
       cancelled = true;
     };
-  }, [currentRecord]);
+  }, [currentRecord.output_path]);
 
   const handleDelete = async () => {
     const ok = confirm('确定删除这张已裁剪图片吗？原图不会删除。');
@@ -132,7 +148,7 @@ export function CroppedPreviewOverlay({
           <div
             style={{
               position: 'absolute',
-              bottom: 20,
+              bottom: 56,
               left: '50%',
               transform: 'translateX(-50%)',
               color: 'rgba(255,255,255,0.8)',
@@ -158,6 +174,36 @@ export function CroppedPreviewOverlay({
         }}
         onClick={(e) => e.stopPropagation()}
       >
+        {onSetRating && (
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+            {[0, 1, 2, 3].map((r) => {
+              const active = (currentRecord.rating || 0) === r;
+              return (
+                <button
+                  key={r}
+                  className={`btn${active ? ' btn-accent' : ''}`}
+                  style={{ fontSize: 11, height: 30, padding: '0 7px', minWidth: 28, transition: 'none' }}
+                  disabled={previewRatingSaving}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSetRating(currentRecord, r);
+                  }}
+                  title={r === 0 ? '清空星级 (0)' : `${r}星 (${r})`}
+                >
+                  {r === 0 ? '☆' : r === 3 ? (
+                    <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0, lineHeight: 1, fontSize: 8 }}>
+                      <span>★</span>
+                      <span style={{ display: 'flex', gap: 1 }}>
+                        <span>★</span>
+                        <span>★</span>
+                      </span>
+                    </span>
+                  ) : '★'.repeat(r)}
+                </button>
+              );
+            })}
+          </div>
+        )}
         {onDeleteCropRecord && (
           <button
             className="btn btn-danger"
@@ -185,12 +231,40 @@ export function CroppedPreviewOverlay({
         )}
         <button
           className="btn btn-icon"
-          style={{ color: '#fff' }}
+          style={{ color: '#fff', background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.20)' }}
           onClick={onClose}
           title="关闭预览 (Esc)"
         >
           <X size={18} />
         </button>
+      </div>
+
+      {/* Info bar */}
+      <div
+        style={{
+          position: 'absolute',
+          left: 20,
+          bottom: 20,
+          maxWidth: 'min(760px, calc(100vw - 40px))',
+          color: 'rgba(255,255,255,0.85)',
+          fontSize: 12,
+          background: 'rgba(0,0,0,0.45)',
+          padding: '6px 10px',
+          borderRadius: 8,
+          display: 'flex',
+          gap: 8,
+          flexWrap: 'wrap',
+        }}
+      >
+        <span>{currentRecord.relative_path}</span>
+        <span>·</span>
+        <span>{currentRecord.crop_name}</span>
+        <span>·</span>
+        <span>{currentRecord.output_mode === 'mask' ? '遮罩保留' : '硬裁剪'}</span>
+        <span>·</span>
+        <span>{currentRecord.width}×{currentRecord.height}</span>
+        <span>·</span>
+        <span>{new Date(currentRecord.created_at).toLocaleDateString('zh-CN')}</span>
       </div>
     </div>
   );

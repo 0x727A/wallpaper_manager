@@ -130,6 +130,7 @@ pub fn run() {
             unskip_image,
             delete_crop_record,
             set_crop_records_rating,
+            repair_crop_records_from_output_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,8 +1,10 @@
 use base64::Engine;
-use chrono::Local;
+use chrono::{Local, TimeZone};
 use image::ImageEncoder;
+use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tauri::Manager;
 
 use crate::models::{
@@ -572,4 +574,411 @@ pub(crate) fn unskip_image(
         write_skipped(&source_dir, &records)?;
     }
     Ok(())
+}
+
+// ── repair crop records ──
+
+fn parse_crop_filename(filename: &str) -> Option<(&str, String)> {
+    let marker = "__crop_";
+    let idx = filename.rfind(marker)?;
+    let stem = &filename[..idx];
+    let rest = &filename[idx + marker.len()..];
+
+    let dot_idx = rest.rfind('.')?;
+    let ts_part = &rest[..dot_idx];
+    let ts_str = ts_part.split('-').next()?;
+
+    let dt = chrono::NaiveDateTime::parse_from_str(ts_str, "%Y%m%d_%H%M%S").ok()?;
+    let dt = chrono::Local.from_local_datetime(&dt).single()?;
+
+    Some((stem, dt.to_rfc3339()))
+}
+
+fn scan_output_dir(output_dir: &Path) -> (Vec<PathBuf>, Vec<String>) {
+    let mut results = Vec::new();
+    let mut failures = Vec::new();
+    let entries = match fs::read_dir(output_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            failures.push(format!("{}: {}", path_string(output_dir), e));
+            return (results, failures);
+        }
+    };
+    for entry in entries {
+        match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                if path.is_dir() {
+                    let (sub, sub_fail) = scan_output_dir(&path);
+                    results.extend(sub);
+                    failures.extend(sub_fail);
+                } else if crate::paths::is_image_file(&path) {
+                    results.push(path);
+                }
+            }
+            Err(e) => {
+                failures.push(format!("{}: {}", path_string(output_dir), e));
+            }
+        }
+    }
+    (results, failures)
+}
+
+fn find_source_image(
+    source_dir: &Path,
+    rel_parent: &Path,
+    stem: &str,
+) -> Result<Option<PathBuf>, String> {
+    // 1. 在相对目录下找
+    for ext in ["jpg", "jpeg", "png"] {
+        let candidate = source_dir.join(rel_parent).join(format!("{}.{}", stem, ext));
+        if candidate.exists() {
+            return Ok(Some(candidate));
+        }
+    }
+
+    // 2. 全局搜索
+    let mut matches = Vec::new();
+    fn search_dir(dir: &Path, stem: &str, matches: &mut Vec<PathBuf>) {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if !crate::paths::is_hidden_or_excluded_dir(name) {
+                        search_dir(&path, stem, matches);
+                    }
+                } else if crate::paths::is_image_file(&path) {
+                    if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        if file_stem == stem {
+                            matches.push(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    search_dir(source_dir, stem, &mut matches);
+
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(Some(matches.into_iter().next().unwrap())),
+        _ => Err(format!("原图 '{}' 找到多个匹配，无法确定", stem)),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn repair_crop_records_from_output_dir(
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::models::RepairCropRecordsResult, String> {
+    let (source_dir, output_dir, records_lock) = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|e| format!("锁错误: {}", e))?;
+        (
+            settings.source_dir.clone(),
+            settings.output_dir.clone(),
+            state.records_lock.clone(),
+        )
+    };
+
+    if source_dir.is_empty() || output_dir.is_empty() {
+        return Err("请先设置图库目录和输出目录".into());
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        repair_crop_records_blocking(source_dir, output_dir, records_lock)
+    })
+    .await
+    .map_err(|e| format!("修复任务失败: {}", e))?
+}
+
+fn repair_crop_records_blocking(
+    source_dir: String,
+    output_dir: String,
+    records_lock: Arc<std::sync::Mutex<()>>,
+) -> Result<crate::models::RepairCropRecordsResult, String> {
+    use crate::models::RepairCropRecordsResult;
+    use crate::paths::{
+        canonical_source_dir, path_string, relative_path_for_record,
+    };
+    use crate::records::{read_crops, write_crops};
+
+    let source_root = canonical_source_dir(&source_dir)?;
+    let output_root =
+        fs::canonicalize(&output_dir).map_err(|e| format!("输出目录无效: {}", e))?;
+
+    // 阶段 1：锁内快速读 records
+    let initial_records = {
+        let _guard = records_lock.lock().map_err(|e| format!("记录锁错误: {}", e))?;
+        read_crops(&source_dir)?
+    };
+
+    // 阶段 2：锁外扫描、匹配、读尺寸、生成变更计划
+    let (crop_files, scan_failures) = scan_output_dir(&output_root);
+    let mut failed = scan_failures;
+
+    let mut skipped = 0usize;
+    let mut matched_indices: HashMap<usize, String> = HashMap::new();
+
+    let filename_counts: HashMap<String, usize> = crop_files.iter()
+        .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()))
+        .fold(HashMap::new(), |mut acc, f| {
+            *acc.entry(f).or_insert(0) += 1;
+            acc
+        });
+
+    // 建立初始索引（锁外，只读内存）
+    let mut existing_by_canon: HashMap<String, usize> = HashMap::new();
+    let mut existing_by_rel_parent: HashMap<(String, String), Vec<usize>> = HashMap::new();
+    let mut existing_by_filename: HashMap<String, Vec<usize>> = HashMap::new();
+
+    for (i, r) in initial_records.iter().enumerate() {
+        if let Ok(canon) = fs::canonicalize(&r.output_path) {
+            existing_by_canon.insert(path_string(&canon), i);
+        }
+        let rel_parent = Path::new(&r.relative_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        existing_by_rel_parent
+            .entry((rel_parent, r.output_filename.clone()))
+            .or_default()
+            .push(i);
+        existing_by_filename
+            .entry(r.output_filename.clone())
+            .or_default()
+            .push(i);
+    }
+
+    // 变更计划
+    struct UpdatePlan {
+        canon_path: String,
+        source_path: Option<String>,
+        match_relative_path: String,
+        match_output_filename: String,
+    }
+    let mut updates: Vec<UpdatePlan> = Vec::new();
+    let mut additions: Vec<crate::models::CropRecord> = Vec::new();
+
+    for crop_path in crop_files {
+        let filename = match crop_path.file_name().and_then(|n| n.to_str()) {
+            Some(f) => f,
+            None => {
+                failed.push(format!("无法读取文件名: {}", path_string(&crop_path)));
+                continue;
+            }
+        };
+
+        let (stem, created_at) = match parse_crop_filename(filename) {
+            Some((s, dt)) => (s, dt),
+            None => {
+                skipped += 1;
+                continue;
+            }
+        };
+
+        let canon_path = match fs::canonicalize(&crop_path) {
+            Ok(p) => p,
+            Err(e) => {
+                failed.push(format!("无法 canonicalize {}: {}", filename, e));
+                continue;
+            }
+        };
+        let path_str = path_string(&canon_path);
+
+        let crop_rel_parent = canon_path
+            .strip_prefix(&output_root)
+            .unwrap_or(Path::new(""))
+            .parent()
+            .unwrap_or(Path::new(""))
+            .to_string_lossy()
+            .to_string();
+
+        // 匹配 1：canonical output_path
+        let mut matched_idx: Option<usize> = None;
+        if let Some(&idx) = existing_by_canon.get(&path_str) {
+            matched_idx = Some(idx);
+        }
+
+        // 匹配 2：(relative_parent, filename)
+        if matched_idx.is_none() {
+            if let Some(idxs) = existing_by_rel_parent.get(&(crop_rel_parent.clone(), filename.to_string())) {
+                if idxs.len() == 1 {
+                    matched_idx = Some(idxs[0]);
+                }
+            }
+        }
+
+        // 匹配 3：filename 全局唯一兜底
+        if matched_idx.is_none() {
+            if let Some(idxs) = existing_by_filename.get(filename) {
+                if idxs.len() == 1 && !matched_indices.contains_key(&idxs[0]) {
+                    let scan_count = filename_counts.get(filename).copied().unwrap_or(0);
+                    if scan_count == 1 {
+                        matched_idx = Some(idxs[0]);
+                    } else {
+                        failed.push(format!("{}: 扫描到多个同名裁剪图，不兜底匹配", filename));
+                        continue;
+                    }
+                } else if idxs.len() > 1 {
+                    failed.push(format!("{}: 多个记录同名，无法匹配", filename));
+                    continue;
+                } else if matched_indices.contains_key(&idxs[0]) {
+                    failed.push(format!("{}: 同名记录已被 '{}' 匹配", filename, matched_indices[&idxs[0]]));
+                    continue;
+                }
+            }
+        }
+
+        // 已有记录：收集更新计划
+        if let Some(idx) = matched_idx {
+            let rel_output = canon_path
+                .strip_prefix(&output_root)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| filename.to_string());
+            matched_indices.insert(idx, rel_output);
+
+            // 修正 source_path
+            let expected_source = source_root.join(&initial_records[idx].relative_path);
+            let new_source = if expected_source.exists() {
+                fs::canonicalize(&expected_source).ok().map(|p| path_string(&p))
+            } else {
+                let stem = Path::new(&initial_records[idx].relative_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                let rel_parent = Path::new(&initial_records[idx].relative_path).parent().unwrap_or(Path::new(""));
+                match find_source_image(&source_root, rel_parent, stem) {
+                    Ok(Some(p)) => Some(path_string(&p)),
+                    _ => None,
+                }
+            };
+
+            if new_source.is_none() {
+                failed.push(format!("{}: 原图 '{}' 无法定位", filename, initial_records[idx].relative_path));
+            }
+
+            updates.push(UpdatePlan {
+                canon_path: path_str,
+                source_path: new_source,
+                match_relative_path: initial_records[idx].relative_path.clone(),
+                match_output_filename: initial_records[idx].output_filename.clone(),
+            });
+            continue;
+        }
+
+        // 新建记录
+        let source_image = match find_source_image(&source_root, Path::new(&crop_rel_parent), stem) {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                failed.push(format!("{}: 找不到原图 '{}'", filename, stem));
+                continue;
+            }
+            Err(e) => {
+                failed.push(format!("{}: {}", filename, e));
+                continue;
+            }
+        };
+
+        let (crop_w, crop_h) = match image::image_dimensions(&canon_path) {
+            Ok((w, h)) => (w, h),
+            Err(e) => {
+                failed.push(format!("{}: 无法读取裁剪图尺寸: {}", filename, e));
+                continue;
+            }
+        };
+
+        let (orig_w, orig_h) = match image::image_dimensions(&source_image) {
+            Ok((w, h)) => (w, h),
+            Err(e) => {
+                failed.push(format!("{}: 无法读取原图尺寸: {}", filename, e));
+                continue;
+            }
+        };
+
+        let source_path_str = path_string(&source_image);
+        let rel_path = match source_image.strip_prefix(&source_root) {
+            Ok(r) => relative_path_for_record(r),
+            Err(_) => {
+                failed.push(format!("{}: 无法计算相对路径", filename));
+                continue;
+            }
+        };
+
+        additions.push(crate::models::CropRecord {
+            source_path: source_path_str,
+            relative_path: rel_path,
+            crop_name: "recovered".to_string(),
+            x: 0,
+            y: 0,
+            width: crop_w,
+            height: crop_h,
+            original_width: orig_w,
+            original_height: orig_h,
+            output_path: path_str,
+            output_filename: filename.to_string(),
+            ratio_mode: "free".to_string(),
+            created_at,
+            output_mode: "crop".to_string(),
+            rating: 0,
+        });
+    }
+
+    // 阶段 3：锁内重新读 records，应用变更，写回
+    let final_records = {
+        let _guard = records_lock.lock().map_err(|e| format!("记录锁错误: {}", e))?;
+        let mut records = read_crops(&source_dir)?;
+
+        // 建立最新索引
+        let mut latest_by_canon: HashMap<String, usize> = HashMap::new();
+        for (i, r) in records.iter().enumerate() {
+            if let Ok(canon) = fs::canonicalize(&r.output_path) {
+                latest_by_canon.insert(path_string(&canon), i);
+            }
+        }
+
+        let mut added = 0usize;
+        let mut updated_paths = 0usize;
+
+        // 应用 updates（按 relative_path + output_filename 找目标，兼容旧路径失效场景）
+        for plan in updates {
+            if let Some(idx) = records.iter().position(|r| {
+                r.relative_path == plan.match_relative_path && r.output_filename == plan.match_output_filename
+            }) {
+                if records[idx].output_path != plan.canon_path {
+                    records[idx].output_path = plan.canon_path;
+                    updated_paths += 1;
+                }
+                if let Some(new_source) = plan.source_path {
+                    if records[idx].source_path != new_source {
+                        records[idx].source_path = new_source;
+                        updated_paths += 1;
+                    }
+                }
+            }
+        }
+
+        // 应用 additions（只用 canonical path 去重，不全局按 filename 一刀切）
+        for record in additions {
+            if !latest_by_canon.contains_key(&record.output_path) {
+                records.push(record);
+                added += 1;
+            }
+        }
+
+        write_crops(&source_dir, &records)?;
+
+        Ok::<_, String>(RepairCropRecordsResult {
+            added,
+            updated_paths,
+            skipped,
+            failed,
+            records,
+        })
+    }?;
+
+    Ok(final_records)
 }

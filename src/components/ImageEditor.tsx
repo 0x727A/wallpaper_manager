@@ -32,6 +32,8 @@ interface Props {
   onConfirmRecrop?: (request: SaveCropRequest) => void;
   onSkipImage?: () => void;
   recropSaving?: boolean;
+  isContinueCropActive?: boolean;
+  onPreviewSavedCrop?: (record: CropRecord) => void;
 }
 
 export function ImageEditor({
@@ -51,6 +53,8 @@ export function ImageEditor({
   onCancelRecrop,
   onConfirmRecrop,
   recropSaving,
+  isContinueCropActive,
+  onPreviewSavedCrop,
 }: Props) {
   const [crop, setCrop] = useState<PercentCrop>();
   const [completedCrop, setCompletedCrop] = useState<PercentCrop>();
@@ -70,10 +74,6 @@ export function ImageEditor({
   });
   const [outputMode, setOutputMode] = useState<OutputMode>('crop');
   const [rating, setRating] = useState<Rating>(0);
-
-  useEffect(() => {
-    localStorage.setItem('cropGuideMode', guideMode);
-  }, [guideMode]);
 
   const isRecropActive = recropTarget && recropTarget.relative_path === image.relative_path;
 
@@ -302,6 +302,17 @@ export function ImageEditor({
     }
   };
 
+  const handleSaveAndPreview = async () => {
+    const req = buildCropRequest();
+    if (!req) return;
+    const record = await doSave(req);
+    if (record) {
+      onSave(record);
+      setCropName('');
+      onPreviewSavedCrop?.(record);
+    }
+  };
+
   const applyPixelCrop = (px: { x: number; y: number; width: number; height: number }) => {
     if (!preview) return;
     const newCrop: PercentCrop = {
@@ -425,8 +436,10 @@ export function ImageEditor({
           onWidthChange={handleWidthChange}
           onHeightChange={handleHeightChange}
           isRecropActive={!!isRecropActive}
+          isContinueCropActive={isContinueCropActive}
           saving={saving || !!recropSaving}
           onPreviewRecrop={handlePreviewRecrop}
+          onSaveAndPreview={handleSaveAndPreview}
           onCancelRecrop={onCancelRecrop}
           onConfirmRecrop={handleConfirmRecrop}
           onSave={handleSave}
