@@ -15,6 +15,8 @@ import { ImageEditorInspector } from './image-editor/ImageEditorInspector';
 import { RATIOS, MIN_ZOOM, MAX_ZOOM, WHEEL_ZOOM_FACTOR } from './image-editor/constants';
 import { GuideMode, OutputMode, Rating } from './image-editor/types';
 
+const GUIDE_MODES: GuideMode[] = ['none', 'thirds', 'diagonal', 'cross', 'thirds_diagonal', 'thirds_cross'];
+
 interface Props {
   image: ImageEntry;
   existingCrops: CropRecord[];
@@ -70,8 +72,14 @@ export function ImageEditor({
   }, [fitZoom]);
 
   const [guideMode, setGuideMode] = useState<GuideMode>(() => {
-    return (localStorage.getItem('cropGuideMode') as GuideMode) || 'thirds';
+    const stored = localStorage.getItem('cropGuideMode') as GuideMode | null;
+    return stored && GUIDE_MODES.includes(stored) ? stored : 'thirds';
   });
+
+  const handleGuideModeChange = (value: GuideMode) => {
+    setGuideMode(value);
+    localStorage.setItem('cropGuideMode', value);
+  };
   const [outputMode, setOutputMode] = useState<OutputMode>('crop');
   const [rating, setRating] = useState<Rating>(0);
 
@@ -430,7 +438,7 @@ export function ImageEditor({
           rating={rating}
           onRatingChange={setRating}
           guideMode={guideMode}
-          onGuideModeChange={setGuideMode}
+          onGuideModeChange={handleGuideModeChange}
           completedCrop={completedCrop}
           preview={preview}
           onWidthChange={handleWidthChange}

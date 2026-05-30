@@ -11,6 +11,27 @@ use crate::models::{AppState, BatchFailure, BatchProgress, BatchResult, CropReco
 use crate::paths::{path_string, validate_output_dir, validate_source_path};
 use crate::records::{read_crops, read_skipped, write_crops, write_skipped};
 
+fn safe_relative_path(relative_path: &str) -> Result<std::path::PathBuf, String> {
+    let normalized = relative_path.replace('\\', "/");
+    let mut out = std::path::PathBuf::new();
+
+    for part in normalized.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            return Err("relative_path 包含 ..".into());
+        }
+        out.push(part);
+    }
+
+    if out.as_os_str().is_empty() {
+        return Err("relative_path 为空".into());
+    }
+
+    Ok(out)
+}
+
 #[tauri::command]
 pub(crate) async fn pick_json_file(handle: AppHandle) -> Result<Option<String>, String> {
     let file = tauri::async_runtime::spawn_blocking(move || {
@@ -66,11 +87,32 @@ fn run_batch_from_json_blocking(
 
         let current_path = record.relative_path.clone();
 
-        let candidate = Path::new(source_dir).join(&record.relative_path);
+        let rel_path = match safe_relative_path(&record.relative_path) {
+            Ok(p) => p,
+            Err(e) => {
+                failures.push(BatchFailure {
+                    source_path: record.relative_path.clone(),
+                    reason: e,
+                });
+                done += 1;
+                let _ = handle.emit(format!("batch-progress-{}", job_id).as_str(), BatchProgress { total, done, success, failed: failures.len(), current: current_path.clone() });
+                continue;
+            }
+        };
+
+        let candidate = Path::new(source_dir).join(&rel_path);
         let source_path_str = if candidate.exists() {
             path_string(&candidate)
-        } else {
+        } else if Path::new(&record.source_path).exists() {
             record.source_path.clone()
+        } else {
+            failures.push(BatchFailure {
+                source_path: record.relative_path.clone(),
+                reason: format!("找不到原图: {}", path_string(&candidate)),
+            });
+            done += 1;
+            let _ = handle.emit(format!("batch-progress-{}", job_id).as_str(), BatchProgress { total, done, success, failed: failures.len(), current: current_path.clone() });
+            continue;
         };
 
         let source = match validate_source_path(source_dir, &source_path_str) {
